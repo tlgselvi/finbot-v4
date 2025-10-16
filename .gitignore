@@ -62,3 +62,7 @@ k8s/secrets/
 # Temporary files
 tmp/
 temp/
+
+# Ignore old finbot versions
+finbotv3/
+finbot-v4-1/
