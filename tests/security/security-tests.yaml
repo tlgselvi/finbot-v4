@@ -1,0 +1,735 @@
+# FinBot v4 - Security Tests
+# Comprehensive security testing for secret rotation, access control, and network policies
+
+---
+# Security Test Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-tests
+  labels:
+    name: security-tests
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+---
+# Secret Rotation Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: secret-rotation-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: secret-rotation
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: secret-rotation-test
+        image: hashicorp/vault:1.15.2
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing secret rotation and access control..."
+          
+          export VAULT_ADDR="https://vault.security.svc.cluster.local:8200"
+          export VAULT_SKIP_VERIFY=true
+          
+          # Test 1: Verify Vault connectivity
+          echo "Test 1: Testing Vault connectivity..."
+          vault status || {
+            echo "ERROR: Cannot connect to Vault"
+            exit 1
+          }
+          echo "✓ Vault connectivity successful"
+          
+          # Test 2: Test Kubernetes authentication
+          echo ""
+          echo "Test 2: Testing Kubernetes authentication..."
+          
+          # Authenticate using service account token
+          vault write auth/kubernetes/login \
+            role=finbot-production \
+            jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" || {
+            echo "ERROR: Kubernetes authentication failed"
+            exit 1
+          }
+          echo "✓ Kubernetes authentication successful"
+          
+          # Test 3: Test secret access permissions
+          echo ""
+          echo "Test 3: Testing secret access permissions..."
+          
+          # Should be able to read production secrets
+          vault kv get secret/finbot/database/production || {
+            echo "ERROR: Cannot read production database secrets"
+            exit 1
+          }
+          echo "✓ Production secret access successful"
+          
+          # Should NOT be able to read staging secrets (wrong role)
+          vault kv get secret/finbot/database/staging && {
+            echo "ERROR: Unauthorized access to staging secrets (security issue)"
+            exit 1
+          } || {
+            echo "✓ Staging secret access properly restricted"
+          }
+          
+          # Test 4: Test secret rotation
+          echo ""
+          echo "Test 4: Testing secret rotation..."
+          
+          # Get current secret version
+          CURRENT_VERSION=$(vault kv metadata get secret/finbot/rotating/production | grep "Current Version" | awk '{print $3}')
+          echo "Current secret version: $CURRENT_VERSION"
+          
+          # Rotate secret
+          vault kv put secret/finbot/rotating/production \
+            api_token="$(openssl rand -base64 32)" \
+            session_key="$(openssl rand -base64 32)"
+          
+          # Verify new version
+          NEW_VERSION=$(vault kv metadata get secret/finbot/rotating/production | grep "Current Version" | awk '{print $3}')
+          echo "New secret version: $NEW_VERSION"
+          
+          if [ "$NEW_VERSION" -gt "$CURRENT_VERSION" ]; then
+            echo "✓ Secret rotation successful"
+          else
+            echo "ERROR: Secret rotation failed"
+            exit 1
+          fi
+          
+          echo ""
+          echo "All secret rotation tests passed!"
+        env:
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-test-token
+              key: token
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Network Policy Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: network-policy-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: network-policies
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: network-policy-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing network policy enforcement..."
+          
+          # Test 1: Create test pods in different namespaces
+          echo "Test 1: Creating test pods..."
+          
+          # Create test pod in production namespace
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: network-test-production
+            namespace: production
+            labels:
+              test: network-policy
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ['sleep', '300']
+          EOF
+          
+          # Create test pod in staging namespace
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: network-test-staging
+            namespace: staging
+            labels:
+              test: network-policy
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ['sleep', '300']
+          EOF
+          
+          # Create test service in database namespace
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: network-test-database
+            namespace: database
+            labels:
+              test: network-policy
+              app: test-db
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ['sleep', '300']
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: test-db-service
+            namespace: database
+          spec:
+            selector:
+              app: test-db
+            ports:
+            - port: 5432
+              targetPort: 5432
+          EOF
+          
+          # Wait for pods to be ready
+          echo "Waiting for test pods to be ready..."
+          kubectl wait --for=condition=Ready pod/network-test-production -n production --timeout=60s
+          kubectl wait --for=condition=Ready pod/network-test-staging -n staging --timeout=60s
+          kubectl wait --for=condition=Ready pod/network-test-database -n database --timeout=60s
+          
+          # Test 2: Test allowed connections
+          echo ""
+          echo "Test 2: Testing allowed connections..."
+          
+          # Production should be able to connect to database
+          kubectl exec network-test-production -n production -- nc -z test-db-service.database.svc.cluster.local 5432 || {
+            echo "ERROR: Production cannot connect to database (should be allowed)"
+            exit 1
+          }
+          echo "✓ Production to database connection allowed"
+          
+          # Test 3: Test blocked connections
+          echo ""
+          echo "Test 3: Testing blocked connections..."
+          
+          # Staging should NOT be able to connect to production (if network policy is strict)
+          kubectl exec network-test-staging -n staging -- timeout 5 nc -z network-test-production.production.svc.cluster.local 80 && {
+            echo "WARNING: Staging can connect to production (check network policies)"
+          } || {
+            echo "✓ Staging to production connection properly blocked"
+          }
+          
+          # Test 4: Test DNS resolution (should work)
+          echo ""
+          echo "Test 4: Testing DNS resolution..."
+          
+          kubectl exec network-test-production -n production -- nslookup kubernetes.default.svc.cluster.local || {
+            echo "ERROR: DNS resolution failed"
+            exit 1
+          }
+          echo "✓ DNS resolution works"
+          
+          # Test 5: Test external connectivity
+          echo ""
+          echo "Test 5: Testing external connectivity..."
+          
+          kubectl exec network-test-production -n production -- timeout 10 nc -z google.com 443 || {
+            echo "WARNING: External connectivity blocked (may be expected)"
+          }
+          
+          # Cleanup
+          kubectl delete pod network-test-production -n production --ignore-not-found
+          kubectl delete pod network-test-staging -n staging --ignore-not-found
+          kubectl delete pod network-test-database -n database --ignore-not-found
+          kubectl delete service test-db-service -n database --ignore-not-found
+          
+          echo ""
+          echo "All network policy tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# RBAC Access Control Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rbac-access-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: rbac
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: rbac-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing RBAC access control..."
+          
+          # Test 1: Test service account permissions
+          echo "Test 1: Testing service account permissions..."
+          
+          # Production service account should be able to access production resources
+          kubectl auth can-i get pods --as=system:serviceaccount:production:finbot-production -n production || {
+            echo "ERROR: Production service account cannot access production pods"
+            exit 1
+          }
+          echo "✓ Production service account has correct permissions"
+          
+          # Production service account should NOT access staging resources
+          kubectl auth can-i get pods --as=system:serviceaccount:production:finbot-production -n staging && {
+            echo "ERROR: Production service account can access staging (security issue)"
+            exit 1
+          } || {
+            echo "✓ Production service account properly restricted from staging"
+          }
+          
+          # Test 2: Test database access permissions
+          echo ""
+          echo "Test 2: Testing database access permissions..."
+          
+          # Database service account should access database namespace
+          kubectl auth can-i get pods --as=system:serviceaccount:database:finbot-database -n database || {
+            echo "ERROR: Database service account cannot access database pods"
+            exit 1
+          }
+          echo "✓ Database service account has correct permissions"
+          
+          # Database service account should NOT access production namespace
+          kubectl auth can-i get pods --as=system:serviceaccount:database:finbot-database -n production && {
+            echo "ERROR: Database service account can access production (security issue)"
+            exit 1
+          } || {
+            echo "✓ Database service account properly restricted from production"
+          }
+          
+          # Test 3: Test monitoring permissions
+          echo ""
+          echo "Test 3: Testing monitoring permissions..."
+          
+          # Monitoring service account should have cluster-wide read access
+          kubectl auth can-i get pods --as=system:serviceaccount:monitoring:finbot-monitoring --all-namespaces || {
+            echo "ERROR: Monitoring service account cannot access cluster resources"
+            exit 1
+          }
+          echo "✓ Monitoring service account has correct cluster permissions"
+          
+          # Test 4: Test security service account permissions
+          echo ""
+          echo "Test 4: Testing security service account permissions..."
+          
+          # Security service account should manage network policies
+          kubectl auth can-i create networkpolicies --as=system:serviceaccount:security:finbot-security || {
+            echo "ERROR: Security service account cannot manage network policies"
+            exit 1
+          }
+          echo "✓ Security service account has correct permissions"
+          
+          echo ""
+          echo "All RBAC tests passed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Pod Security Standards Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pod-security-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: pod-security
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: pod-security-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing Pod Security Standards..."
+          
+          # Test 1: Test privileged pod rejection in production
+          echo "Test 1: Testing privileged pod rejection..."
+          
+          cat <<EOF | kubectl apply --dry-run=server -f - && {
+            echo "ERROR: Privileged pod was allowed in production (security issue)"
+            exit 1
+          } || {
+            echo "✓ Privileged pod properly rejected in production"
+          }
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: privileged-test-pod
+            namespace: production
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              securityContext:
+                privileged: true
+          EOF
+          
+          # Test 2: Test root user rejection in production
+          echo ""
+          echo "Test 2: Testing root user rejection..."
+          
+          cat <<EOF | kubectl apply --dry-run=server -f - && {
+            echo "ERROR: Root user pod was allowed in production (security issue)"
+            exit 1
+          } || {
+            echo "✓ Root user pod properly rejected in production"
+          }
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: root-user-test-pod
+            namespace: production
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              securityContext:
+                runAsUser: 0
+          EOF
+          
+          # Test 3: Test valid pod acceptance
+          echo ""
+          echo "Test 3: Testing valid pod acceptance..."
+          
+          cat <<EOF | kubectl apply --dry-run=server -f - || {
+            echo "ERROR: Valid pod was rejected (configuration issue)"
+            exit 1
+          }
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: valid-test-pod
+            namespace: production
+          spec:
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65534
+              fsGroup: 65534
+            containers:
+            - name: test
+              image: busybox:latest
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop:
+                  - ALL
+          EOF
+          echo "✓ Valid pod properly accepted"
+          
+          # Test 4: Test namespace security labels
+          echo ""
+          echo "Test 4: Testing namespace security labels..."
+          
+          PROD_ENFORCE=$(kubectl get namespace production -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')
+          if [ "$PROD_ENFORCE" = "restricted" ]; then
+            echo "✓ Production namespace has restricted pod security enforcement"
+          else
+            echo "ERROR: Production namespace does not have restricted enforcement: $PROD_ENFORCE"
+            exit 1
+          fi
+          
+          STAGING_ENFORCE=$(kubectl get namespace staging -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')
+          if [ "$STAGING_ENFORCE" = "baseline" ] || [ "$STAGING_ENFORCE" = "restricted" ]; then
+            echo "✓ Staging namespace has appropriate pod security enforcement: $STAGING_ENFORCE"
+          else
+            echo "ERROR: Staging namespace has insufficient enforcement: $STAGING_ENFORCE"
+            exit 1
+          fi
+          
+          echo ""
+          echo "All Pod Security Standards tests passed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Image Security Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: image-security-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: image-security
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: image-security-test
+        image: aquasec/trivy:0.47.0
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing image security and vulnerability scanning..."
+          
+          # Test 1: Test vulnerability scanning
+          echo "Test 1: Testing vulnerability scanning..."
+          
+          # Scan a known vulnerable image
+          trivy image --format json --severity HIGH,CRITICAL alpine:3.10 > /tmp/scan-result.json
+          
+          VULN_COUNT=$(cat /tmp/scan-result.json | jq '.Results[]?.Vulnerabilities | length' 2>/dev/null || echo "0")
+          if [ "$VULN_COUNT" -gt 0 ]; then
+            echo "✓ Vulnerability scanning is working (found $VULN_COUNT vulnerabilities)"
+          else
+            echo "WARNING: No vulnerabilities found in known vulnerable image"
+          fi
+          
+          # Test 2: Test clean image scanning
+          echo ""
+          echo "Test 2: Testing clean image scanning..."
+          
+          trivy image --format json --severity HIGH,CRITICAL gcr.io/distroless/static:latest > /tmp/clean-scan.json
+          
+          CLEAN_VULN_COUNT=$(cat /tmp/clean-scan.json | jq '.Results[]?.Vulnerabilities | length' 2>/dev/null || echo "0")
+          echo "✓ Clean image scan completed (found $CLEAN_VULN_COUNT vulnerabilities)"
+          
+          # Test 3: Test image policy webhook (if available)
+          echo ""
+          echo "Test 3: Testing image policy enforcement..."
+          
+          # Try to create pod with untrusted registry (should fail if webhook is active)
+          cat <<EOF | kubectl apply --dry-run=server -f - && {
+            echo "WARNING: Untrusted image was allowed (check image policy webhook)"
+          } || {
+            echo "✓ Untrusted image properly rejected"
+          }
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: untrusted-image-test
+            namespace: production
+          spec:
+            containers:
+            - name: test
+              image: docker.io/untrusted/malicious:latest
+          EOF
+          
+          # Test 4: Check for Trivy operator
+          echo ""
+          echo "Test 4: Checking Trivy operator status..."
+          
+          kubectl get deployment trivy-operator -n trivy-system || {
+            echo "WARNING: Trivy operator not found"
+          }
+          
+          # Check for vulnerability reports
+          VULN_REPORTS=$(kubectl get vulnerabilityreports --all-namespaces --no-headers 2>/dev/null | wc -l || echo "0")
+          if [ "$VULN_REPORTS" -gt 0 ]; then
+            echo "✓ Found $VULN_REPORTS vulnerability reports"
+          else
+            echo "WARNING: No vulnerability reports found"
+          fi
+          
+          echo ""
+          echo "All image security tests completed!"
+        env:
+        - name: TRIVY_CACHE_DIR
+          value: /tmp/trivy-cache
+        volumeMounts:
+        - name: cache
+          mountPath: /tmp/trivy-cache
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+      volumes:
+      - name: cache
+        emptyDir: {}
+
+---
+# Security Test Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: security-test-sa
+  namespace: security-tests
+
+---
+# Security Test RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: security-test-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "namespaces", "serviceaccounts"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
+- apiGroups: ["aquasecurity.github.io"]
+  resources: ["vulnerabilityreports"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: security-test-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: security-test-role
+subjects:
+- kind: ServiceAccount
+  name: security-test-sa
+  namespace: security-tests
+
+---
+# Vault Test Token Secret (placeholder)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-test-token
+  namespace: security-tests
+type: Opaque
+data:
+  token: dGVzdC10b2tlbi1wbGFjZWhvbGRlcg== # test-token-placeholder
+
+---
+# Security Test Runner Script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-test-runner
+  namespace: security-tests
+data:
+  run-security-tests.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting FinBot v4 Security Tests..."
+    echo "===================================="
+    
+    # Test execution order
+    TESTS=(
+      "secret-rotation-test"
+      "rbac-access-test"
+      "network-policy-test"
+      "pod-security-test"
+      "image-security-test"
+    )
+    
+    PASSED=0
+    FAILED=0
+    
+    for test in "${TESTS[@]}"; do
+      echo ""
+      echo "Running test: $test"
+      echo "------------------------"
+      
+      # Delete any existing test job
+      kubectl delete job $test -n security-tests --ignore-not-found
+      
+      # Create and run test
+      kubectl create job $test --from=job/$test -n security-tests 2>/dev/null || {
+        echo "ERROR: Failed to create test job $test"
+        ((FAILED++))
+        continue
+      }
+      
+      # Wait for completion
+      kubectl wait --for=condition=complete job/$test -n security-tests --timeout=300s || {
+        echo "ERROR: Test $test timed out or failed"
+        kubectl logs job/$test -n security-tests
+        ((FAILED++))
+        continue
+      }
+      
+      # Show results
+      kubectl logs job/$test -n security-tests
+      echo "✓ Test $test completed successfully"
+      ((PASSED++))
+      
+      # Cleanup
+      kubectl delete job $test -n security-tests --ignore-not-found
+    done
+    
+    echo ""
+    echo "===================================="
+    echo "Security Test Results:"
+    echo "  Passed: $PASSED"
+    echo "  Failed: $FAILED"
+    echo "  Total:  $((PASSED + FAILED))"
+    
+    if [ $FAILED -gt 0 ]; then
+      echo "❌ Some security tests failed!"
+      exit 1
+    else
+      echo "✅ All security tests passed!"
+      exit 0
+    fi

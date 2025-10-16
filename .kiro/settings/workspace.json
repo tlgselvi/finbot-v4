@@ -1,0 +1,30 @@
+{
+  "workspace": {
+    "name": "FinBot v4",
+    "version": "4.0.0",
+    "type": "spec-driven-development",
+    "framework": "react-node-postgresql"
+  },
+  "specs": {
+    "enabled": true,
+    "directory": ".kiro/specs",
+    "workflow": ["requirements", "design", "tasks"],
+    "autoGenerate": true
+  },
+  "development": {
+    "testCoverage": {
+      "target": 85,
+      "current": 78
+    },
+    "performance": {
+      "bundleSize": "1.2MB",
+      "apiResponseTime": "200ms",
+      "cacheHitRate": "85%"
+    }
+  },
+  "deployment": {
+    "platform": "render",
+    "database": "postgresql",
+    "cache": "redis"
+  }
+}

@@ -1,0 +1,541 @@
+# FinBot v4 - ServiceMonitors and Prometheus Rules
+# Monitoring configuration for all FinBot services
+
+---
+# API Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: finbot-api
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: finbot-api
+spec:
+  selector:
+    matchLabels:
+      app: finbot-api
+  namespaceSelector:
+    matchNames:
+    - production
+    - staging
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_namespace]
+      targetLabel: namespace
+    - sourceLabels: [__meta_kubernetes_service_name]
+      targetLabel: service
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+
+---
+# Web Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: finbot-web
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: finbot-web
+spec:
+  selector:
+    matchLabels:
+      app: finbot-web
+  namespaceSelector:
+    matchNames:
+    - production
+    - staging
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+
+---
+# Database Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgresql
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: postgresql
+spec:
+  selector:
+    matchLabels:
+      app: postgresql
+  namespaceSelector:
+    matchNames:
+    - database
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_service_name]
+      targetLabel: service
+      replacement: postgresql
+
+---
+# Redis Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: redis
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  namespaceSelector:
+    matchNames:
+    - cache
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+
+---
+# Istio Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: istio-system
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: istio
+spec:
+  selector:
+    matchLabels:
+      app: istiod
+  namespaceSelector:
+    matchNames:
+    - istio-system
+  endpoints:
+  - port: http-monitoring
+    interval: 15s
+    path: /stats/prometheus
+
+---
+# Vault Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vault
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: vault
+spec:
+  selector:
+    matchLabels:
+      app: vault
+  namespaceSelector:
+    matchNames:
+    - security
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /v1/sys/metrics
+    params:
+      format: ['prometheus']
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+
+---
+# Node Exporter Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: node-exporter
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: node-exporter
+spec:
+  selector:
+    matchLabels:
+      app: node-exporter
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: instance
+
+---
+# Kube State Metrics Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: kube-state-metrics
+spec:
+  selector:
+    matchLabels:
+      app: kube-state-metrics
+  endpoints:
+  - port: http-metrics
+    interval: 30s
+    path: /metrics
+    honorLabels: true
+  - port: telemetry
+    interval: 30s
+    path: /metrics
+
+---
+# Kubelet Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubelet
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: kubelet
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kubelet
+  namespaceSelector:
+    matchNames:
+    - kube-system
+  endpoints:
+  - port: https-metrics
+    interval: 30s
+    path: /metrics
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_node_name]
+      targetLabel: node
+  - port: https-metrics
+    interval: 30s
+    path: /metrics/cadvisor
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_node_name]
+      targetLabel: node
+
+---
+# External Secrets Operator Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: external-secrets
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: external-secrets
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets
+  namespaceSelector:
+    matchNames:
+    - external-secrets-system
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+
+---
+# Trivy Operator Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: trivy-operator
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: trivy-operator
+spec:
+  selector:
+    matchLabels:
+      app: trivy-operator
+  namespaceSelector:
+    matchNames:
+    - trivy-system
+  endpoints:
+  - port: metrics
+    interval: 60s
+    path: /metrics
+
+---
+# Falco Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: falco
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: falco
+spec:
+  selector:
+    matchLabels:
+      app: falco
+  namespaceSelector:
+    matchNames:
+    - security
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+
+---
+# FinBot Application Prometheus Rules
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: finbot-application-rules
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: finbot
+spec:
+  groups:
+  - name: finbot.api.rules
+    interval: 30s
+    rules:
+    - alert: FinBotAPIHighErrorRate
+      expr: |
+        (
+          rate(http_requests_total{job="finbot-api",code=~"5.."}[5m]) /
+          rate(http_requests_total{job="finbot-api"}[5m])
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        service: finbot-api
+      annotations:
+        summary: "FinBot API high error rate"
+        description: "FinBot API error rate is {{ $value | humanizePercentage }} for the last 5 minutes."
+    
+    - alert: FinBotAPIHighLatency
+      expr: |
+        histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="finbot-api"}[5m])) > 2
+      for: 5m
+      labels:
+        severity: warning
+        service: finbot-api
+      annotations:
+        summary: "FinBot API high latency"
+        description: "FinBot API 95th percentile latency is {{ $value }}s for the last 5 minutes."
+    
+    - alert: FinBotAPIDown
+      expr: up{job="finbot-api"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        service: finbot-api
+      annotations:
+        summary: "FinBot API is down"
+        description: "FinBot API has been down for more than 1 minute."
+    
+    - alert: FinBotDatabaseConnectionHigh
+      expr: |
+        (
+          postgresql_stat_database_numbackends{datname="finbot_production"} /
+          postgresql_settings_max_connections
+        ) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        service: postgresql
+      annotations:
+        summary: "FinBot database connection usage high"
+        description: "Database connection usage is {{ $value | humanizePercentage }} of maximum."
+
+  - name: finbot.infrastructure.rules
+    interval: 30s
+    rules:
+    - alert: FinBotNodeHighCPU
+      expr: |
+        (
+          100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+        ) > 80
+      for: 10m
+      labels:
+        severity: warning
+        component: node
+      annotations:
+        summary: "Node high CPU usage"
+        description: "Node {{ $labels.instance }} CPU usage is {{ $value }}% for the last 10 minutes."
+    
+    - alert: FinBotNodeHighMemory
+      expr: |
+        (
+          (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) /
+          node_memory_MemTotal_bytes
+        ) > 0.85
+      for: 10m
+      labels:
+        severity: warning
+        component: node
+      annotations:
+        summary: "Node high memory usage"
+        description: "Node {{ $labels.instance }} memory usage is {{ $value | humanizePercentage }}."
+    
+    - alert: FinBotNodeDiskSpaceHigh
+      expr: |
+        (
+          (node_filesystem_size_bytes{fstype!="tmpfs"} - node_filesystem_free_bytes{fstype!="tmpfs"}) /
+          node_filesystem_size_bytes{fstype!="tmpfs"}
+        ) > 0.85
+      for: 5m
+      labels:
+        severity: warning
+        component: node
+      annotations:
+        summary: "Node disk space usage high"
+        description: "Node {{ $labels.instance }} disk usage is {{ $value | humanizePercentage }} on {{ $labels.mountpoint }}."
+    
+    - alert: FinBotPodCrashLooping
+      expr: |
+        rate(kube_pod_container_status_restarts_total[15m]) > 0
+      for: 5m
+      labels:
+        severity: warning
+        component: kubernetes
+      annotations:
+        summary: "Pod is crash looping"
+        description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash looping."
+    
+    - alert: FinBotPodNotReady
+      expr: |
+        kube_pod_status_ready{condition="false"} == 1
+      for: 10m
+      labels:
+        severity: warning
+        component: kubernetes
+      annotations:
+        summary: "Pod not ready"
+        description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been not ready for more than 10 minutes."
+
+  - name: finbot.security.rules
+    interval: 60s
+    rules:
+    - alert: FinBotVulnerabilityHigh
+      expr: |
+        trivy_image_vulnerabilities{severity="High"} > 5
+      for: 0m
+      labels:
+        severity: warning
+        component: security
+      annotations:
+        summary: "High number of vulnerabilities detected"
+        description: "Image {{ $labels.image_repository }}:{{ $labels.image_tag }} has {{ $value }} high severity vulnerabilities."
+    
+    - alert: FinBotVulnerabilityCritical
+      expr: |
+        trivy_image_vulnerabilities{severity="Critical"} > 0
+      for: 0m
+      labels:
+        severity: critical
+        component: security
+      annotations:
+        summary: "Critical vulnerabilities detected"
+        description: "Image {{ $labels.image_repository }}:{{ $labels.image_tag }} has {{ $value }} critical vulnerabilities."
+    
+    - alert: FinBotSecurityPolicyViolation
+      expr: |
+        increase(falco_events_total[5m]) > 10
+      for: 0m
+      labels:
+        severity: warning
+        component: security
+      annotations:
+        summary: "Security policy violations detected"
+        description: "{{ $value }} security policy violations detected in the last 5 minutes."
+    
+    - alert: FinBotVaultSealed
+      expr: |
+        vault_core_unsealed == 0
+      for: 0m
+      labels:
+        severity: critical
+        component: vault
+      annotations:
+        summary: "Vault is sealed"
+        description: "Vault instance {{ $labels.instance }} is sealed and cannot serve requests."
+
+---
+# Recording Rules for Performance Metrics
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: finbot-recording-rules
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: finbot
+spec:
+  groups:
+  - name: finbot.recording.rules
+    interval: 30s
+    rules:
+    - record: finbot:api_request_rate
+      expr: |
+        sum(rate(http_requests_total{job="finbot-api"}[5m])) by (method, endpoint, status)
+    
+    - record: finbot:api_error_rate
+      expr: |
+        sum(rate(http_requests_total{job="finbot-api",code=~"5.."}[5m])) by (method, endpoint) /
+        sum(rate(http_requests_total{job="finbot-api"}[5m])) by (method, endpoint)
+    
+    - record: finbot:api_latency_p95
+      expr: |
+        histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="finbot-api"}[5m])) by (le, method, endpoint))
+    
+    - record: finbot:api_latency_p99
+      expr: |
+        histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job="finbot-api"}[5m])) by (le, method, endpoint))
+    
+    - record: finbot:database_connections_usage
+      expr: |
+        postgresql_stat_database_numbackends{datname="finbot_production"} /
+        postgresql_settings_max_connections
+    
+    - record: finbot:redis_memory_usage
+      expr: |
+        redis_memory_used_bytes / redis_memory_max_bytes
+    
+    - record: finbot:node_cpu_usage
+      expr: |
+        100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
+    
+    - record: finbot:node_memory_usage
+      expr: |
+        (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) /
+        node_memory_MemTotal_bytes
+    
+    - record: finbot:pod_cpu_usage
+      expr: |
+        sum(rate(container_cpu_usage_seconds_total{container!="POD",container!=""}[5m])) by (namespace, pod)
+    
+    - record: finbot:pod_memory_usage
+      expr: |
+        sum(container_memory_working_set_bytes{container!="POD",container!=""}) by (namespace, pod)

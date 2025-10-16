@@ -1,0 +1,480 @@
+# FinBot v4 - Vault and External Secrets Operator Integration
+# Vault authentication and policy configurations for ESO
+
+---
+# Vault Auth Method Configuration Script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-eso-setup
+  namespace: security
+data:
+  setup-vault-eso.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Setting up Vault authentication for External Secrets Operator..."
+    
+    # Vault server URL
+    export VAULT_ADDR="https://vault.security.svc.cluster.local:8200"
+    export VAULT_SKIP_VERIFY=true
+    
+    # Enable Kubernetes auth method
+    vault auth enable -path=kubernetes kubernetes || echo "Kubernetes auth already enabled"
+    
+    # Configure Kubernetes auth method
+    vault write auth/kubernetes/config \
+        token_reviewer_jwt="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+        kubernetes_host="https://kubernetes.default.svc.cluster.local" \
+        kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    
+    # Create policies for different namespaces
+    
+    # Production namespace policy
+    vault policy write finbot-production-policy - <<EOF
+    # Database secrets
+    path "secret/data/finbot/database/production" {
+      capabilities = ["read"]
+    }
+    
+    # Redis secrets
+    path "secret/data/finbot/redis/production" {
+      capabilities = ["read"]
+    }
+    
+    # API secrets
+    path "secret/data/finbot/api/production" {
+      capabilities = ["read"]
+    }
+    
+    # Integration secrets
+    path "secret/data/finbot/integrations/*" {
+      capabilities = ["read"]
+    }
+    
+    # TLS certificates
+    path "secret/data/finbot/tls/production" {
+      capabilities = ["read"]
+    }
+    
+    # Rotating secrets
+    path "secret/data/finbot/rotating/production" {
+      capabilities = ["read"]
+    }
+    EOF
+    
+    # Staging namespace policy
+    vault policy write finbot-staging-policy - <<EOF
+    # Database secrets
+    path "secret/data/finbot/database/staging" {
+      capabilities = ["read"]
+    }
+    
+    # Redis secrets
+    path "secret/data/finbot/redis/staging" {
+      capabilities = ["read"]
+    }
+    
+    # API secrets
+    path "secret/data/finbot/api/staging" {
+      capabilities = ["read"]
+    }
+    
+    # Integration secrets (limited)
+    path "secret/data/finbot/integrations/auth0" {
+      capabilities = ["read"]
+    }
+    
+    # TLS certificates
+    path "secret/data/finbot/tls/staging" {
+      capabilities = ["read"]
+    }
+    EOF
+    
+    # Database namespace policy
+    vault policy write finbot-database-policy - <<EOF
+    # Database management secrets
+    path "secret/data/finbot/database/*" {
+      capabilities = ["read"]
+    }
+    
+    # Backup credentials
+    path "secret/data/finbot/backup/database" {
+      capabilities = ["read"]
+    }
+    EOF
+    
+    # Cache namespace policy
+    vault policy write finbot-cache-policy - <<EOF
+    # Redis management secrets
+    path "secret/data/finbot/redis/*" {
+      capabilities = ["read"]
+    }
+    
+    # Cache configuration
+    path "secret/data/finbot/cache/config" {
+      capabilities = ["read"]
+    }
+    EOF
+    
+    # Monitoring namespace policy
+    vault policy write finbot-monitoring-policy - <<EOF
+    # Monitoring credentials
+    path "secret/data/finbot/monitoring/*" {
+      capabilities = ["read"]
+    }
+    
+    # Alert manager secrets
+    path "secret/data/finbot/alerting/*" {
+      capabilities = ["read"]
+    }
+    EOF
+    
+    # External Secrets Operator cluster admin policy
+    vault policy write finbot-cluster-admin-policy - <<EOF
+    # Full access to finbot secrets for cluster-wide operations
+    path "secret/data/finbot/*" {
+      capabilities = ["read"]
+    }
+    
+    # Certificate authority access
+    path "secret/data/finbot/ca/*" {
+      capabilities = ["read"]
+    }
+    EOF
+    
+    # Create Kubernetes auth roles
+    
+    # Production role
+    vault write auth/kubernetes/role/finbot-production \
+        bound_service_account_names=finbot-production \
+        bound_service_account_namespaces=production \
+        policies=finbot-production-policy \
+        ttl=24h
+    
+    # Staging role
+    vault write auth/kubernetes/role/finbot-staging \
+        bound_service_account_names=finbot-staging \
+        bound_service_account_namespaces=staging \
+        policies=finbot-staging-policy \
+        ttl=24h
+    
+    # Database role
+    vault write auth/kubernetes/role/finbot-database \
+        bound_service_account_names=finbot-database \
+        bound_service_account_namespaces=database \
+        policies=finbot-database-policy \
+        ttl=24h
+    
+    # Cache role
+    vault write auth/kubernetes/role/finbot-cache \
+        bound_service_account_names=finbot-cache \
+        bound_service_account_namespaces=cache \
+        policies=finbot-cache-policy \
+        ttl=24h
+    
+    # Monitoring role
+    vault write auth/kubernetes/role/finbot-monitoring \
+        bound_service_account_names=finbot-monitoring \
+        bound_service_account_namespaces=monitoring \
+        policies=finbot-monitoring-policy \
+        ttl=24h
+    
+    # External Secrets Operator cluster admin role
+    vault write auth/kubernetes/role/finbot-cluster-admin \
+        bound_service_account_names=external-secrets \
+        bound_service_account_namespaces=external-secrets-system \
+        policies=finbot-cluster-admin-policy \
+        ttl=24h
+    
+    echo "Vault ESO integration setup completed!"
+
+---
+# Job to Setup Vault ESO Integration
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-eso-setup-job
+  namespace: security
+spec:
+  template:
+    spec:
+      serviceAccountName: vault-admin
+      restartPolicy: Never
+      containers:
+      - name: vault-setup
+        image: hashicorp/vault:1.15.2
+        command:
+        - /bin/sh
+        - /scripts/setup-vault-eso.sh
+        env:
+        - name: VAULT_ADDR
+          value: "https://vault.security.svc.cluster.local:8200"
+        - name: VAULT_SKIP_VERIFY
+          value: "true"
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-root-token
+              key: token
+        volumeMounts:
+        - name: setup-script
+          mountPath: /scripts
+        - name: vault-ca
+          mountPath: /etc/vault/ca
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+      volumes:
+      - name: setup-script
+        configMap:
+          name: vault-eso-setup
+          defaultMode: 0755
+      - name: vault-ca
+        secret:
+          secretName: vault-ca-cert
+
+---
+# Vault Secret Seeding Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-secret-seeding
+  namespace: security
+spec:
+  template:
+    spec:
+      serviceAccountName: vault-admin
+      restartPolicy: Never
+      containers:
+      - name: secret-seeding
+        image: hashicorp/vault:1.15.2
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          export VAULT_ADDR="https://vault.security.svc.cluster.local:8200"
+          export VAULT_SKIP_VERIFY=true
+          
+          echo "Seeding initial secrets in Vault..."
+          
+          # Enable KV v2 secrets engine
+          vault secrets enable -path=secret kv-v2 || echo "KV v2 already enabled"
+          
+          # Production database secrets
+          vault kv put secret/finbot/database/production \
+            username="finbot_prod" \
+            password="$(openssl rand -base64 32)" \
+            host="postgresql.database.svc.cluster.local" \
+            port="5432" \
+            database="finbot_production"
+          
+          # Staging database secrets
+          vault kv put secret/finbot/database/staging \
+            username="finbot_staging" \
+            password="$(openssl rand -base64 32)" \
+            host="postgresql.database.svc.cluster.local" \
+            port="5432" \
+            database="finbot_staging"
+          
+          # Production Redis secrets
+          vault kv put secret/finbot/redis/production \
+            password="$(openssl rand -base64 32)" \
+            host="redis.cache.svc.cluster.local" \
+            port="6379"
+          
+          # Staging Redis secrets
+          vault kv put secret/finbot/redis/staging \
+            password="$(openssl rand -base64 32)" \
+            host="redis.cache.svc.cluster.local" \
+            port="6379"
+          
+          # API secrets
+          vault kv put secret/finbot/api/production \
+            jwt_secret="$(openssl rand -base64 64)"
+          
+          vault kv put secret/finbot/api/staging \
+            jwt_secret="$(openssl rand -base64 64)"
+          
+          # Integration secrets (placeholders)
+          vault kv put secret/finbot/integrations/stripe \
+            api_key="sk_test_placeholder" \
+            webhook_secret="whsec_placeholder"
+          
+          vault kv put secret/finbot/integrations/auth0 \
+            client_id="auth0_client_id_placeholder" \
+            client_secret="auth0_client_secret_placeholder"
+          
+          vault kv put secret/finbot/integrations/slack \
+            webhook_url="https://hooks.slack.com/placeholder"
+          
+          vault kv put secret/finbot/integrations/sendgrid \
+            api_key="SG.placeholder"
+          
+          # Monitoring secrets
+          vault kv put secret/finbot/monitoring/credentials \
+            grafana_admin_password="$(openssl rand -base64 32)" \
+            prometheus_basic_auth="$(echo -n 'admin:$(openssl rand -base64 32)' | base64)" \
+            alertmanager_webhook_url="https://hooks.slack.com/placeholder" \
+            pagerduty_integration_key="placeholder_key"
+          
+          # Rotating secrets (will be rotated regularly)
+          vault kv put secret/finbot/rotating/production \
+            api_token="$(openssl rand -base64 32)" \
+            session_key="$(openssl rand -base64 32)"
+          
+          echo "Secret seeding completed!"
+        env:
+        - name: VAULT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: vault-root-token
+              key: token
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Vault CA Certificate Secret (placeholder)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-ca-cert
+  namespace: security
+type: Opaque
+data:
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K # Placeholder CA cert
+
+---
+# External Secrets Operator Vault CA Injection
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vault-ca-bundle
+  namespace: external-secrets-system
+data:
+  ca-bundle.crt: |
+    -----BEGIN CERTIFICATE-----
+    # Vault CA certificate will be injected here by the setup job
+    -----END CERTIFICATE-----
+
+---
+# Secret Rotation CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: secret-rotation
+  namespace: security
+spec:
+  schedule: "0 2 * * *" # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: vault-admin
+          restartPolicy: OnFailure
+          containers:
+          - name: secret-rotator
+            image: hashicorp/vault:1.15.2
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              export VAULT_ADDR="https://vault.security.svc.cluster.local:8200"
+              export VAULT_SKIP_VERIFY=true
+              
+              echo "Rotating secrets..."
+              
+              # Rotate API tokens
+              vault kv patch secret/finbot/rotating/production \
+                api_token="$(openssl rand -base64 32)" \
+                session_key="$(openssl rand -base64 32)"
+              
+              # Rotate database passwords (if using dynamic secrets)
+              # This would be implemented based on your database setup
+              
+              echo "Secret rotation completed!"
+            env:
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vault-root-token
+                  key: token
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+
+---
+# External Secrets Operator Health Check
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-secrets-webhook
+  namespace: external-secrets-system
+  labels:
+    app.kubernetes.io/name: external-secrets-webhook
+spec:
+  selector:
+    app.kubernetes.io/name: external-secrets
+  ports:
+  - name: webhook
+    port: 443
+    targetPort: 9443
+    protocol: TCP
+
+---
+# Network Policy for External Secrets Operator
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: external-secrets-network-policy
+  namespace: external-secrets-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: external-secrets
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: TCP
+      port: 8080 # Metrics
+    - protocol: TCP
+      port: 8081 # Health checks
+    - protocol: TCP
+      port: 9443 # Webhook
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: security
+    ports:
+    - protocol: TCP
+      port: 8200 # Vault
+  - to: [] # Allow DNS resolution
+    ports:
+    - protocol: UDP
+      port: 53
+  - to: [] # Allow HTTPS to external providers if needed
+    ports:
+    - protocol: TCP
+      port: 443

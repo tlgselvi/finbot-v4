@@ -1,0 +1,517 @@
+# FinBot v4 - PostgreSQL High Availability Cluster
+# CloudNativePG operator for PostgreSQL HA with automatic failover
+
+---
+# PostgreSQL Cluster Configuration
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: postgres-cluster
+  namespace: database
+  labels:
+    app: postgresql
+    component: database
+spec:
+  instances: 3
+  
+  # PostgreSQL configuration
+  postgresql:
+    parameters:
+      # Connection settings
+      max_connections: "200"
+      shared_preload_libraries: "pg_stat_statements"
+      
+      # Memory settings
+      shared_buffers: "256MB"
+      effective_cache_size: "1GB"
+      maintenance_work_mem: "64MB"
+      work_mem: "4MB"
+      
+      # Checkpoint settings
+      checkpoint_completion_target: "0.9"
+      wal_buffers: "16MB"
+      
+      # Query planner settings
+      default_statistics_target: "100"
+      random_page_cost: "1.1"
+      effective_io_concurrency: "200"
+      
+      # Logging settings
+      log_destination: "stderr"
+      logging_collector: "on"
+      log_directory: "log"
+      log_filename: "postgresql-%Y-%m-%d_%H%M%S.log"
+      log_rotation_age: "1d"
+      log_rotation_size: "100MB"
+      log_min_duration_statement: "1000"
+      log_line_prefix: "%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h "
+      log_checkpoints: "on"
+      log_connections: "on"
+      log_disconnections: "on"
+      log_lock_waits: "on"
+      log_temp_files: "0"
+      
+      # Performance monitoring
+      track_activities: "on"
+      track_counts: "on"
+      track_io_timing: "on"
+      track_functions: "pl"
+      
+      # Security settings
+      ssl: "on"
+      ssl_cert_file: "/opt/certs/tls.crt"
+      ssl_key_file: "/opt/certs/tls.key"
+      ssl_ca_file: "/opt/certs/ca.crt"
+      
+  # Primary update strategy
+  primaryUpdateStrategy: unsupervised
+  
+  # Storage configuration
+  storage:
+    size: 100Gi
+    storageClass: fast-ssd
+    resizeInUseVolumes: true
+  
+  # Monitoring configuration
+  monitoring:
+    enabled: true
+    podMonitorEnabled: true
+    
+  # Backup configuration
+  backup:
+    retentionPolicy: "30d"
+    barmanObjectStore:
+      destinationPath: "s3://finbot-backups/postgresql"
+      s3Credentials:
+        accessKeyId:
+          name: backup-credentials
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: backup-credentials
+          key: SECRET_ACCESS_KEY
+        region:
+          name: backup-credentials
+          key: DEFAULT_REGION
+      wal:
+        retention: "7d"
+        maxParallel: 8
+      data:
+        retention: "30d"
+        jobs: 2
+        immediateCheckpoint: true
+        
+  # Bootstrap configuration
+  bootstrap:
+    initdb:
+      database: finbot_v4
+      owner: finbot_user
+      secret:
+        name: postgres-credentials
+      dataChecksums: true
+      encoding: "UTF8"
+      localeCType: "C"
+      localeCollate: "C"
+      
+  # Resource requirements
+  resources:
+    requests:
+      memory: "1Gi"
+      cpu: "500m"
+    limits:
+      memory: "4Gi"
+      cpu: "2000m"
+      
+  # Affinity rules for HA
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchExpressions:
+          - key: postgresql
+            operator: In
+            values:
+            - postgres-cluster
+        topologyKey: kubernetes.io/hostname
+        
+  # Node selector for database nodes
+  nodeSelector:
+    workload: database
+    
+  # Tolerations for database nodes
+  tolerations:
+  - key: workload
+    operator: Equal
+    value: database
+    effect: NoSchedule
+
+---
+# PostgreSQL Credentials Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: database
+  labels:
+    app: postgresql
+type: Opaque
+data:
+  # Base64 encoded credentials (replace with actual values)
+  username: ZmluYm90X3VzZXI=  # finbot_user
+  password: ZmluYm90X3Bhc3N3b3JkXzIwMjQ=  # finbot_password_2024
+
+---
+# Backup Credentials Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backup-credentials
+  namespace: database
+  labels:
+    app: postgresql
+    component: backup
+type: Opaque
+data:
+  # Base64 encoded AWS credentials (replace with actual values)
+  ACCESS_KEY_ID: QUtJQUlPU0ZPRE5ON0VYQU1QTEU=
+  SECRET_ACCESS_KEY: d0phbHJYVXRuRkVNSS9LN01ERU5HL2JQeFJmaUNZRVhBTVBMRUtFWQ==
+  DEFAULT_REGION: dXMtd2VzdC0y  # us-west-2
+
+---
+# PostgreSQL Primary Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-primary
+  namespace: database
+  labels:
+    app: postgresql
+    component: primary
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    postgresql: postgres-cluster
+    role: primary
+
+---
+# PostgreSQL Read-Only Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-readonly
+  namespace: database
+  labels:
+    app: postgresql
+    component: readonly
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    postgresql: postgres-cluster
+    role: replica
+
+---
+# PostgreSQL Any Service (for admin tasks)
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-any
+  namespace: database
+  labels:
+    app: postgresql
+    component: any
+spec:
+  type: ClusterIP
+  ports:
+  - name: postgres
+    port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    postgresql: postgres-cluster
+
+---
+# PgBouncer Connection Pooler
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  namespace: database
+  labels:
+    app: pgbouncer
+    component: connection-pooler
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pgbouncer
+  template:
+    metadata:
+      labels:
+        app: pgbouncer
+    spec:
+      serviceAccountName: postgres-service-account
+      containers:
+      - name: pgbouncer
+        image: pgbouncer/pgbouncer:1.21.0
+        ports:
+        - name: pgbouncer
+          containerPort: 5432
+        env:
+        - name: DATABASES_HOST
+          value: postgres-primary.database.svc.cluster.local
+        - name: DATABASES_PORT
+          value: "5432"
+        - name: DATABASES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: username
+        - name: DATABASES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: password
+        - name: DATABASES_DBNAME
+          value: finbot_v4
+        - name: POOL_MODE
+          value: transaction
+        - name: MAX_CLIENT_CONN
+          value: "1000"
+        - name: DEFAULT_POOL_SIZE
+          value: "25"
+        - name: MIN_POOL_SIZE
+          value: "5"
+        - name: RESERVE_POOL_SIZE
+          value: "5"
+        - name: RESERVE_POOL_TIMEOUT
+          value: "5"
+        - name: MAX_DB_CONNECTIONS
+          value: "100"
+        - name: MAX_USER_CONNECTIONS
+          value: "100"
+        - name: SERVER_RESET_QUERY
+          value: "DISCARD ALL"
+        - name: SERVER_CHECK_QUERY
+          value: "SELECT 1"
+        - name: SERVER_CHECK_DELAY
+          value: "30"
+        - name: LOG_CONNECTIONS
+          value: "1"
+        - name: LOG_DISCONNECTIONS
+          value: "1"
+        - name: LOG_POOLER_ERRORS
+          value: "1"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: pgbouncer-config
+          mountPath: /etc/pgbouncer
+      volumes:
+      - name: pgbouncer-config
+        configMap:
+          name: pgbouncer-config
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - pgbouncer
+              topologyKey: kubernetes.io/hostname
+
+---
+# PgBouncer Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgbouncer-config
+  namespace: database
+  labels:
+    app: pgbouncer
+data:
+  pgbouncer.ini: |
+    [databases]
+    finbot_v4 = host=postgres-primary.database.svc.cluster.local port=5432 dbname=finbot_v4
+    
+    [pgbouncer]
+    listen_addr = 0.0.0.0
+    listen_port = 5432
+    auth_type = md5
+    auth_file = /etc/pgbouncer/userlist.txt
+    
+    # Connection pooling
+    pool_mode = transaction
+    max_client_conn = 1000
+    default_pool_size = 25
+    min_pool_size = 5
+    reserve_pool_size = 5
+    reserve_pool_timeout = 5
+    max_db_connections = 100
+    max_user_connections = 100
+    
+    # Timeouts
+    server_reset_query = DISCARD ALL
+    server_check_query = SELECT 1
+    server_check_delay = 30
+    server_connect_timeout = 15
+    server_login_retry = 15
+    client_login_timeout = 60
+    autodb_idle_timeout = 3600
+    
+    # Logging
+    log_connections = 1
+    log_disconnections = 1
+    log_pooler_errors = 1
+    syslog = 0
+    syslog_facility = daemon
+    syslog_ident = pgbouncer
+    
+    # Security
+    ignore_startup_parameters = extra_float_digits
+    
+    # Admin
+    admin_users = finbot_user
+    stats_users = finbot_user
+    
+  userlist.txt: |
+    "finbot_user" "md5a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+
+---
+# PgBouncer Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  namespace: database
+  labels:
+    app: pgbouncer
+spec:
+  type: ClusterIP
+  ports:
+  - name: pgbouncer
+    port: 5432
+    targetPort: 5432
+    protocol: TCP
+  selector:
+    app: pgbouncer
+
+---
+# PostgreSQL Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-service-account
+  namespace: database
+  labels:
+    app: postgresql
+
+---
+# PostgreSQL Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-network-policy
+  namespace: database
+  labels:
+    app: postgresql
+spec:
+  podSelector:
+    matchLabels:
+      postgresql: postgres-cluster
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: production
+    - namespaceSelector:
+        matchLabels:
+          name: staging
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: pgbouncer
+    ports:
+    - protocol: TCP
+      port: 5432
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+---
+# PostgreSQL Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: database
+  labels:
+    app: postgresql
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      postgresql: postgres-cluster
+
+---
+# PostgreSQL Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: postgres-cluster
+  namespace: monitoring
+  labels:
+    app: postgresql
+spec:
+  selector:
+    matchLabels:
+      postgresql: postgres-cluster
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+  namespaceSelector:
+    matchNames:
+    - database

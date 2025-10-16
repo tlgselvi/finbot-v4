@@ -1,0 +1,118 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: finbot-test
+  labels:
+    name: finbot-test
+    environment: test
+    app: finbot
+    version: v4
+  annotations:
+    description: "FinBot v4 Test Environment - Isolated testing namespace"
+    created-by: "finbot-team"
+    purpose: "safe-testing"
+
+---
+# Test Environment Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: finbot-test-quota
+  namespace: finbot-test
+spec:
+  hard:
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    persistentvolumeclaims: "10"
+    services: "20"
+    secrets: "20"
+    configmaps: "20"
+    pods: "50"
+
+---
+# Test Environment Network Policy - İzolasyon
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: finbot-test-isolation
+  namespace: finbot-test
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  
+  # Sadece test namespace içi trafiğe izin ver
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: finbot-test
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: finbot-test
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # DNS çözümlemesi için
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+  # External test services için
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+---
+# Test Environment Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: finbot-test-sa
+  namespace: finbot-test
+  labels:
+    app: finbot
+    environment: test
+
+---
+# Test Environment RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: finbot-test
+  name: finbot-test-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: finbot-test-binding
+  namespace: finbot-test
+subjects:
+- kind: ServiceAccount
+  name: finbot-test-sa
+  namespace: finbot-test
+roleRef:
+  kind: Role
+  name: finbot-test-role
+  apiGroup: rbac.authorization.k8s.io

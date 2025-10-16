@@ -1,0 +1,753 @@
+# FinBot v4 - Alerting Integrations and Notification Channels
+# PagerDuty, Slack, Email, and webhook integrations
+
+---
+# PagerDuty Integration External Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: pagerduty-integration
+  namespace: monitoring
+spec:
+  refreshInterval: 3600s
+  secretStoreRef:
+    name: vault-cluster-backend
+    kind: ClusterSecretStore
+  target:
+    name: pagerduty-integration
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        api-critical-key: "{{ .api_critical_key }}"
+        database-critical-key: "{{ .database_critical_key }}"
+        infrastructure-critical-key: "{{ .infrastructure_critical_key }}"
+        security-critical-key: "{{ .security_critical_key }}"
+        vault-critical-key: "{{ .vault_critical_key }}"
+  data:
+  - secretKey: api_critical_key
+    remoteRef:
+      key: finbot/integrations/pagerduty
+      property: api_critical_key
+  - secretKey: database_critical_key
+    remoteRef:
+      key: finbot/integrations/pagerduty
+      property: database_critical_key
+  - secretKey: infrastructure_critical_key
+    remoteRef:
+      key: finbot/integrations/pagerduty
+      property: infrastructure_critical_key
+  - secretKey: security_critical_key
+    remoteRef:
+      key: finbot/integrations/pagerduty
+      property: security_critical_key
+  - secretKey: vault_critical_key
+    remoteRef:
+      key: finbot/integrations/pagerduty
+      property: vault_critical_key
+
+---
+# Slack Integration External Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: slack-integration
+  namespace: monitoring
+spec:
+  refreshInterval: 3600s
+  secretStoreRef:
+    name: vault-cluster-backend
+    kind: ClusterSecretStore
+  target:
+    name: slack-integration
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        webhook-url: "{{ .webhook_url }}"
+        api-webhook: "{{ .api_webhook }}"
+        database-webhook: "{{ .database_webhook }}"
+        infrastructure-webhook: "{{ .infrastructure_webhook }}"
+        security-webhook: "{{ .security_webhook }}"
+        critical-webhook: "{{ .critical_webhook }}"
+  data:
+  - secretKey: webhook_url
+    remoteRef:
+      key: finbot/integrations/slack
+      property: webhook_url
+  - secretKey: api_webhook
+    remoteRef:
+      key: finbot/integrations/slack
+      property: api_webhook
+  - secretKey: database_webhook
+    remoteRef:
+      key: finbot/integrations/slack
+      property: database_webhook
+  - secretKey: infrastructure_webhook
+    remoteRef:
+      key: finbot/integrations/slack
+      property: infrastructure_webhook
+  - secretKey: security_webhook
+    remoteRef:
+      key: finbot/integrations/slack
+      property: security_webhook
+  - secretKey: critical_webhook
+    remoteRef:
+      key: finbot/integrations/slack
+      property: critical_webhook
+
+---
+# Email Integration External Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: email-integration
+  namespace: monitoring
+spec:
+  refreshInterval: 3600s
+  secretStoreRef:
+    name: vault-cluster-backend
+    kind: ClusterSecretStore
+  target:
+    name: email-integration
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        smtp-username: "{{ .smtp_username }}"
+        smtp-password: "{{ .smtp_password }}"
+        api-team-email: "{{ .api_team_email }}"
+        database-team-email: "{{ .database_team_email }}"
+        infrastructure-team-email: "{{ .infrastructure_team_email }}"
+        security-team-email: "{{ .security_team_email }}"
+        oncall-email: "{{ .oncall_email }}"
+  data:
+  - secretKey: smtp_username
+    remoteRef:
+      key: finbot/integrations/smtp
+      property: username
+  - secretKey: smtp_password
+    remoteRef:
+      key: finbot/integrations/smtp
+      property: password
+  - secretKey: api_team_email
+    remoteRef:
+      key: finbot/teams/contacts
+      property: api_team_email
+  - secretKey: database_team_email
+    remoteRef:
+      key: finbot/teams/contacts
+      property: database_team_email
+  - secretKey: infrastructure_team_email
+    remoteRef:
+      key: finbot/teams/contacts
+      property: infrastructure_team_email
+  - secretKey: security_team_email
+    remoteRef:
+      key: finbot/teams/contacts
+      property: security_team_email
+  - secretKey: oncall_email
+    remoteRef:
+      key: finbot/teams/contacts
+      property: oncall_email
+
+---
+# AlertManager Configuration with Secrets
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+type: Opaque
+stringData:
+  alertmanager.yml: |
+    global:
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'alerts@finbot.com'
+      smtp_auth_username_file: '/etc/alertmanager/secrets/email-integration/smtp-username'
+      smtp_auth_password_file: '/etc/alertmanager/secrets/email-integration/smtp-password'
+      slack_api_url_file: '/etc/alertmanager/secrets/slack-integration/webhook-url'
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+      resolve_timeout: 5m
+    
+    # Inhibition rules
+    inhibit_rules:
+    - source_matchers:
+      - severity="critical"
+      target_matchers:
+      - severity="warning"
+      equal: ['alertname', 'cluster', 'service']
+    
+    - source_matchers:
+      - alertname="FinBotAPIDown"
+      target_matchers:
+      - alertname="FinBotAPIHighErrorRate"
+      - alertname="FinBotAPIHighLatency"
+    
+    # Main routing tree
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+      
+      # Critical alerts - immediate notification
+      - matchers:
+        - severity="critical"
+        receiver: 'critical-alerts'
+        group_wait: 0s
+        repeat_interval: 5m
+        continue: true
+      
+      # Service-specific routing
+      - matchers:
+        - service="finbot-api"
+        receiver: 'api-team'
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'api-critical'
+          group_wait: 0s
+          repeat_interval: 2m
+      
+      - matchers:
+        - service="postgresql"
+        receiver: 'database-team'
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'database-critical'
+          group_wait: 0s
+          repeat_interval: 2m
+      
+      - matchers:
+        - component="node"
+        - component="kubernetes"
+        receiver: 'infrastructure-team'
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'infrastructure-critical'
+          group_wait: 0s
+          repeat_interval: 2m
+      
+      - matchers:
+        - component="security"
+        receiver: 'security-team'
+        group_wait: 0s
+        repeat_interval: 1m
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'security-critical'
+          group_wait: 0s
+          repeat_interval: 1m
+      
+      - matchers:
+        - component="vault"
+        receiver: 'vault-team'
+        group_wait: 0s
+        repeat_interval: 2m
+    
+    # Time intervals for business hours
+    time_intervals:
+    - name: business-hours
+      time_intervals:
+      - times:
+        - start_time: '09:00'
+          end_time: '17:00'
+        weekdays: ['monday:friday']
+        location: 'America/New_York'
+    
+    # Notification receivers
+    receivers:
+    
+    - name: 'default'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/webhook-url'
+        channel: '#finbot-alerts'
+        title: 'FinBot Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          {{ end }}
+        send_resolved: true
+    
+    - name: 'critical-alerts'
+      pagerduty_configs:
+      - routing_key_file: '/etc/alertmanager/secrets/pagerduty-integration/api-critical-key'
+        description: '{{ .GroupLabels.alertname }} - {{ .CommonAnnotations.summary }}'
+        severity: 'critical'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          service: '{{ .CommonLabels.service }}'
+        links:
+        - href: 'https://grafana.finbot.com/d/finbot-overview'
+          text: 'FinBot Dashboard'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/critical-webhook'
+        channel: '#finbot-critical'
+        title: '🚨 CRITICAL ALERT 🚨'
+        color: 'danger'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Service:* {{ .Labels.service }}
+          {{ end }}
+        send_resolved: true
+    
+    - name: 'api-team'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/api-webhook'
+        channel: '#finbot-api-alerts'
+        title: 'API Service Alert'
+        color: 'warning'
+        send_resolved: true
+      email_configs:
+      - to_file: '/etc/alertmanager/secrets/email-integration/api-team-email'
+        subject: 'FinBot API Alert: {{ .GroupLabels.alertname }}'
+    
+    - name: 'api-critical'
+      pagerduty_configs:
+      - routing_key_file: '/etc/alertmanager/secrets/pagerduty-integration/api-critical-key'
+        description: 'CRITICAL API: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/critical-webhook'
+        channel: '#finbot-api-critical'
+        title: '🚨 API CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    - name: 'database-team'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/database-webhook'
+        channel: '#finbot-database-alerts'
+        title: 'Database Alert'
+        color: 'warning'
+        send_resolved: true
+      email_configs:
+      - to_file: '/etc/alertmanager/secrets/email-integration/database-team-email'
+        subject: 'FinBot Database Alert: {{ .GroupLabels.alertname }}'
+    
+    - name: 'database-critical'
+      pagerduty_configs:
+      - routing_key_file: '/etc/alertmanager/secrets/pagerduty-integration/database-critical-key'
+        description: 'CRITICAL DATABASE: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/critical-webhook'
+        channel: '#finbot-database-critical'
+        title: '🚨 DATABASE CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    - name: 'infrastructure-team'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/infrastructure-webhook'
+        channel: '#finbot-infrastructure'
+        title: 'Infrastructure Alert'
+        color: 'warning'
+        send_resolved: true
+    
+    - name: 'infrastructure-critical'
+      pagerduty_configs:
+      - routing_key_file: '/etc/alertmanager/secrets/pagerduty-integration/infrastructure-critical-key'
+        description: 'CRITICAL INFRASTRUCTURE: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/critical-webhook'
+        channel: '#finbot-infrastructure-critical'
+        title: '🚨 INFRASTRUCTURE CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    - name: 'security-team'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/security-webhook'
+        channel: '#finbot-security'
+        title: '🔒 Security Alert'
+        color: 'danger'
+        send_resolved: true
+      email_configs:
+      - to_file: '/etc/alertmanager/secrets/email-integration/security-team-email'
+        subject: 'SECURITY ALERT: {{ .GroupLabels.alertname }}'
+    
+    - name: 'security-critical'
+      pagerduty_configs:
+      - routing_key_file: '/etc/alertmanager/secrets/pagerduty-integration/security-critical-key'
+        description: 'CRITICAL SECURITY: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/critical-webhook'
+        channel: '#finbot-security-critical'
+        title: '🚨 SECURITY CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    - name: 'vault-team'
+      pagerduty_configs:
+      - routing_key_file: '/etc/alertmanager/secrets/pagerduty-integration/vault-critical-key'
+        description: 'VAULT ALERT: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url_file: '/etc/alertmanager/secrets/slack-integration/critical-webhook'
+        channel: '#finbot-vault'
+        title: '🔐 Vault Alert'
+        color: 'danger'
+        send_resolved: true
+
+---
+# AlertManager Deployment with Secret Mounts
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: monitoring
+  labels:
+    app: alertmanager
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: alertmanager
+  template:
+    metadata:
+      labels:
+        app: alertmanager
+    spec:
+      serviceAccountName: alertmanager
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: alertmanager
+        image: quay.io/prometheus/alertmanager:v0.26.0
+        args:
+        - --config.file=/etc/alertmanager/alertmanager.yml
+        - --storage.path=/alertmanager
+        - --data.retention=120h
+        - --cluster.listen-address=0.0.0.0:9094
+        - --cluster.peer=alertmanager-0.alertmanager.monitoring.svc.cluster.local:9094
+        - --cluster.peer=alertmanager-1.alertmanager.monitoring.svc.cluster.local:9094
+        - --cluster.peer=alertmanager-2.alertmanager.monitoring.svc.cluster.local:9094
+        - --web.listen-address=0.0.0.0:9093
+        - --web.external-url=https://alertmanager.finbot.com
+        - --log.level=info
+        ports:
+        - containerPort: 9093
+          name: web
+        - containerPort: 9094
+          name: mesh
+        volumeMounts:
+        - name: config
+          mountPath: /etc/alertmanager
+        - name: storage
+          mountPath: /alertmanager
+        - name: pagerduty-secrets
+          mountPath: /etc/alertmanager/secrets/pagerduty-integration
+          readOnly: true
+        - name: slack-secrets
+          mountPath: /etc/alertmanager/secrets/slack-integration
+          readOnly: true
+        - name: email-secrets
+          mountPath: /etc/alertmanager/secrets/email-integration
+          readOnly: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 200Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        livenessProbe:
+          httpGet:
+            path: /-/healthy
+            port: 9093
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /-/ready
+            port: 9093
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: config
+        secret:
+          secretName: alertmanager-config
+      - name: storage
+        emptyDir: {}
+      - name: pagerduty-secrets
+        secret:
+          secretName: pagerduty-integration
+      - name: slack-secrets
+        secret:
+          secretName: slack-integration
+      - name: email-secrets
+        secret:
+          secretName: email-integration
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: alertmanager
+            topologyKey: kubernetes.io/hostname
+
+---
+# Webhook Receiver for Custom Integrations
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-receiver
+  namespace: monitoring
+  labels:
+    app: webhook-receiver
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webhook-receiver
+  template:
+    metadata:
+      labels:
+        app: webhook-receiver
+    spec:
+      serviceAccountName: webhook-receiver
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: webhook-receiver
+        image: finbot/webhook-receiver:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: WEBHOOK_PORT
+          value: "8080"
+        - name: WEBHOOK_PATH
+          value: "/webhook"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: slack-integration
+              key: webhook-url
+        - name: TEAMS_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: teams-integration
+              key: webhook-url
+              optional: true
+        volumeMounts:
+        - name: webhook-config
+          mountPath: /etc/webhook
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: webhook-config
+        configMap:
+          name: webhook-config
+
+---
+# Webhook Receiver Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: webhook-receiver
+  namespace: monitoring
+
+---
+# Webhook Receiver Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-receiver
+  namespace: monitoring
+  labels:
+    app: webhook-receiver
+spec:
+  selector:
+    app: webhook-receiver
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+---
+# Webhook Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: webhook-config
+  namespace: monitoring
+data:
+  config.yaml: |
+    webhooks:
+      - name: "finbot-alerts"
+        path: "/webhook/finbot"
+        method: "POST"
+        headers:
+          - name: "Content-Type"
+            value: "application/json"
+        transformations:
+          - type: "slack"
+            template: |
+              {
+                "text": "FinBot Alert: {{ .alert.summary }}",
+                "attachments": [
+                  {
+                    "color": "{{ if eq .alert.severity \"critical\" }}danger{{ else if eq .alert.severity \"warning\" }}warning{{ else }}good{{ end }}",
+                    "fields": [
+                      {
+                        "title": "Service",
+                        "value": "{{ .alert.service }}",
+                        "short": true
+                      },
+                      {
+                        "title": "Severity",
+                        "value": "{{ .alert.severity }}",
+                        "short": true
+                      },
+                      {
+                        "title": "Description",
+                        "value": "{{ .alert.description }}",
+                        "short": false
+                      }
+                    ]
+                  }
+                ]
+              }
+      
+      - name: "custom-integrations"
+        path: "/webhook/custom"
+        method: "POST"
+        auth:
+          type: "bearer"
+          token_env: "WEBHOOK_AUTH_TOKEN"
+        rate_limit:
+          requests_per_minute: 60
+        retry:
+          max_attempts: 3
+          backoff_seconds: 5
+
+---
+# Alert Routing Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: alert-routing-test
+  namespace: monitoring
+spec:
+  template:
+    spec:
+      serviceAccountName: alert-test
+      restartPolicy: Never
+      containers:
+      - name: alert-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing alert routing and notifications..."
+          
+          # Test AlertManager API
+          curl -f http://alertmanager.monitoring.svc.cluster.local:9093/-/healthy || {
+            echo "ERROR: AlertManager health check failed"
+            exit 1
+          }
+          echo "✓ AlertManager is healthy"
+          
+          # Test webhook receiver
+          curl -f http://webhook-receiver.monitoring.svc.cluster.local:8080/health || {
+            echo "ERROR: Webhook receiver health check failed"
+            exit 1
+          }
+          echo "✓ Webhook receiver is healthy"
+          
+          # Send test alert
+          curl -X POST http://alertmanager.monitoring.svc.cluster.local:9093/api/v1/alerts \
+            -H "Content-Type: application/json" \
+            -d '[
+              {
+                "labels": {
+                  "alertname": "TestAlert",
+                  "service": "finbot-api",
+                  "severity": "warning",
+                  "instance": "test"
+                },
+                "annotations": {
+                  "summary": "Test alert for routing verification",
+                  "description": "This is a test alert to verify routing configuration"
+                },
+                "startsAt": "'$(date -Iseconds)'",
+                "endsAt": "'$(date -d '+5 minutes' -Iseconds)'"
+              }
+            ]' || {
+            echo "ERROR: Failed to send test alert"
+            exit 1
+          }
+          echo "✓ Test alert sent successfully"
+          
+          echo "Alert routing test completed!"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# Alert Test Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alert-test
+  namespace: monitoring

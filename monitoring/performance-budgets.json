@@ -1,0 +1,216 @@
+{
+  "budgets": [
+    {
+      "path": "/*",
+      "timings": [
+        {
+          "metric": "first-contentful-paint",
+          "budget": 2000,
+          "tolerance": 200
+        },
+        {
+          "metric": "largest-contentful-paint", 
+          "budget": 2500,
+          "tolerance": 300
+        },
+        {
+          "metric": "first-input-delay",
+          "budget": 100,
+          "tolerance": 20
+        },
+        {
+          "metric": "cumulative-layout-shift",
+          "budget": 0.1,
+          "tolerance": 0.02
+        },
+        {
+          "metric": "speed-index",
+          "budget": 3000,
+          "tolerance": 400
+        },
+        {
+          "metric": "total-blocking-time",
+          "budget": 300,
+          "tolerance": 50
+        }
+      ],
+      "resourceSizes": [
+        {
+          "resourceType": "script",
+          "budget": 500,
+          "tolerance": 50
+        },
+        {
+          "resourceType": "stylesheet",
+          "budget": 100,
+          "tolerance": 20
+        },
+        {
+          "resourceType": "image",
+          "budget": 1000,
+          "tolerance": 200
+        },
+        {
+          "resourceType": "font",
+          "budget": 200,
+          "tolerance": 30
+        },
+        {
+          "resourceType": "total",
+          "budget": 2000,
+          "tolerance": 300
+        }
+      ],
+      "resourceCounts": [
+        {
+          "resourceType": "script",
+          "budget": 10,
+          "tolerance": 2
+        },
+        {
+          "resourceType": "stylesheet",
+          "budget": 5,
+          "tolerance": 1
+        },
+        {
+          "resourceType": "image",
+          "budget": 20,
+          "tolerance": 5
+        },
+        {
+          "resourceType": "font",
+          "budget": 4,
+          "tolerance": 1
+        },
+        {
+          "resourceType": "third-party",
+          "budget": 5,
+          "tolerance": 2
+        }
+      ]
+    },
+    {
+      "path": "/dashboard",
+      "timings": [
+        {
+          "metric": "first-contentful-paint",
+          "budget": 1500,
+          "tolerance": 150
+        },
+        {
+          "metric": "largest-contentful-paint",
+          "budget": 2000,
+          "tolerance": 200
+        },
+        {
+          "metric": "time-to-interactive",
+          "budget": 3000,
+          "tolerance": 400
+        }
+      ]
+    },
+    {
+      "path": "/approval-workflows",
+      "timings": [
+        {
+          "metric": "first-contentful-paint",
+          "budget": 1800,
+          "tolerance": 180
+        },
+        {
+          "metric": "largest-contentful-paint",
+          "budget": 2200,
+          "tolerance": 220
+        }
+      ]
+    }
+  ],
+  "alerts": {
+    "channels": [
+      {
+        "type": "slack",
+        "webhook": "${SLACK_WEBHOOK_URL}",
+        "channel": "#performance-alerts",
+        "enabled": true
+      },
+      {
+        "type": "email",
+        "recipients": ["dev-team@finbot.com", "performance@finbot.com"],
+        "enabled": true
+      },
+      {
+        "type": "github",
+        "repository": "finbot/finbot-v4",
+        "enabled": true
+      }
+    ],
+    "thresholds": {
+      "critical": {
+        "description": "Performance severely degraded",
+        "conditions": [
+          "budget_exceeded_by > 50%",
+          "consecutive_failures >= 3",
+          "error_rate > 10%"
+        ]
+      },
+      "warning": {
+        "description": "Performance degraded",
+        "conditions": [
+          "budget_exceeded_by > 20%",
+          "consecutive_failures >= 2",
+          "error_rate > 5%"
+        ]
+      },
+      "info": {
+        "description": "Performance budget exceeded",
+        "conditions": [
+          "budget_exceeded_by > 0%",
+          "consecutive_failures >= 1"
+        ]
+      }
+    },
+    "rules": [
+      {
+        "name": "Bundle Size Alert",
+        "description": "Alert when bundle size exceeds budget",
+        "metric": "bundle_size",
+        "threshold": "warning",
+        "cooldown": "1h"
+      },
+      {
+        "name": "Core Web Vitals Alert",
+        "description": "Alert when Core Web Vitals exceed thresholds",
+        "metric": "core_web_vitals",
+        "threshold": "critical",
+        "cooldown": "30m"
+      },
+      {
+        "name": "API Response Time Alert",
+        "description": "Alert when API response times are too high",
+        "metric": "api_response_time",
+        "threshold": "warning",
+        "cooldown": "15m"
+      },
+      {
+        "name": "Memory Usage Alert",
+        "description": "Alert when memory usage is too high",
+        "metric": "memory_usage",
+        "threshold": "critical",
+        "cooldown": "5m"
+      }
+    ]
+  },
+  "monitoring": {
+    "intervals": {
+      "lighthouse": "1h",
+      "bundle_analysis": "on_build",
+      "load_testing": "daily",
+      "real_user_monitoring": "continuous"
+    },
+    "retention": {
+      "raw_data": "30d",
+      "aggregated_data": "1y",
+      "reports": "6m"
+    }
+  }
+}

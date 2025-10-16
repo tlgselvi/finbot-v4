@@ -1,0 +1,111 @@
+# FinBot v4 - Prometheus Configuration
+# Monitoring configuration for approval system
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'finbot-approval-system'
+    environment: 'production'
+
+rule_files:
+  - "rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Approval API Instances
+  - job_name: 'approval-api'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # Database Monitoring
+  - job_name: 'postgres'
+    static_configs:
+      - targets: 
+          - 'postgres-primary:5432'
+          - 'postgres-replica:5432'
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Redis Monitoring
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-cluster:6379']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # System Monitoring
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: 
+          - 'node-exporter:9100'
+    scrape_interval: 15s
+
+  # Nginx Monitoring
+  - job_name: 'nginx'
+    static_configs:
+      - targets: ['nginx:9113']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+
+  # Application-specific metrics
+  - job_name: 'approval-workflows'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/api/metrics/workflows'
+    scrape_interval: 30s
+
+  - job_name: 'risk-assessment'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/api/metrics/risk'
+    scrape_interval: 30s
+
+  - job_name: 'fraud-detection'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/api/metrics/fraud'
+    scrape_interval: 30s
+
+  # Business Metrics
+  - job_name: 'business-metrics'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/api/metrics/business'
+    scrape_interval: 60s
+
+  # Security Metrics
+  - job_name: 'security-metrics'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/api/metrics/security'
+    scrape_interval: 30s
+
+  # Performance Metrics
+  - job_name: 'performance-metrics'
+    static_configs:
+      - targets: 
+          - 'approval-api-1:5000'
+          - 'approval-api-2:5000'
+    metrics_path: '/api/metrics/performance'
+    scrape_interval: 15s

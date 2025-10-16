@@ -1,0 +1,78 @@
+# FinBot v4 Test Environment Configuration
+# Bu konfigürasyon sadece test ortamı için kullanılır
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finbot-test-config
+  namespace: finbot-test
+data:
+  # Test Database Configuration
+  DATABASE_URL: "postgresql://test_user:test_pass@postgres-test:5432/finbot_test"
+  REDIS_URL: "redis://redis-test:6379/1"
+  
+  # Test API Configuration
+  API_BASE_URL: "https://api-test.finbot.local"
+  WEB_BASE_URL: "https://test.finbot.local"
+  
+  # Test Authentication
+  JWT_SECRET: "test-jwt-secret-key-change-in-production"
+  JWT_EXPIRES_IN: "24h"
+  
+  # Test Email Configuration
+  SMTP_HOST: "mailhog"
+  SMTP_PORT: "1025"
+  SMTP_USER: "test@finbot.local"
+  SMTP_PASS: "testpass"
+  
+  # Test Payment Providers (Sandbox)
+  STRIPE_PUBLISHABLE_KEY: "pk_test_..."
+  STRIPE_SECRET_KEY: "sk_test_..."
+  PAYPAL_CLIENT_ID: "sandbox_client_id"
+  PAYPAL_CLIENT_SECRET: "sandbox_client_secret"
+  
+  # Test Banking APIs (Sandbox)
+  BANK_API_BASE_URL: "https://sandbox-api.bank.com"
+  BANK_API_KEY: "test_api_key"
+  
+  # Test Monitoring
+  PROMETHEUS_ENABLED: "true"
+  GRAFANA_ADMIN_PASSWORD: "test123"
+  
+  # Test Security
+  RATE_LIMIT_ENABLED: "false"
+  CORS_ORIGIN: "*"
+  
+  # Test Features
+  APPROVAL_SYSTEM_ENABLED: "true"
+  RISK_ASSESSMENT_ENABLED: "true"
+  FRAUD_DETECTION_ENABLED: "false"
+  
+  # Test Data
+  SEED_TEST_DATA: "true"
+  TEST_USER_COUNT: "100"
+  TEST_TRANSACTION_COUNT: "1000"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: finbot-test-secrets
+  namespace: finbot-test
+type: Opaque
+stringData:
+  # Test database credentials
+  postgres-user: "test_user"
+  postgres-password: "test_password_123"
+  postgres-db: "finbot_test"
+  
+  # Test Redis password
+  redis-password: "test_redis_pass"
+  
+  # Test API keys
+  encryption-key: "test-encryption-key-32-chars-long"
+  api-secret: "test-api-secret-key"
+  
+  # Test external services
+  sms-api-key: "test_sms_key"
+  email-api-key: "test_email_key"

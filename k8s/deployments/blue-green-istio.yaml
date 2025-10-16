@@ -1,0 +1,513 @@
+# FinBot v4 - Blue-Green Deployment with Istio Traffic Management
+# Advanced traffic routing and canary deployments with Istio
+
+---
+# DestinationRule for Blue-Green API
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: finbot-api-destination
+  namespace: production
+spec:
+  host: finbot-api.production.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 100
+        connectTimeout: 30s
+      http:
+        http1MaxPendingRequests: 50
+        http2MaxRequests: 100
+        maxRequestsPerConnection: 10
+        maxRetries: 3
+        idleTimeout: 90s
+    outlierDetection:
+      consecutiveGatewayErrors: 5
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 30
+  subsets:
+  - name: blue
+    labels:
+      color: blue
+    trafficPolicy:
+      portLevelSettings:
+      - port:
+          number: 3001
+        connectionPool:
+          tcp:
+            maxConnections: 80
+  - name: green
+    labels:
+      color: green
+    trafficPolicy:
+      portLevelSettings:
+      - port:
+          number: 3001
+        connectionPool:
+          tcp:
+            maxConnections: 80
+
+---
+# VirtualService for Blue-Green API Traffic Management
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: finbot-api-traffic
+  namespace: production
+spec:
+  hosts:
+  - "api.finbot.com"
+  - "finbot-api.production.svc.cluster.local"
+  gateways:
+  - finbot-gateway
+  - mesh
+  http:
+  # Health check routes (no traffic splitting)
+  - match:
+    - uri:
+        prefix: "/health"
+    - uri:
+        prefix: "/ready"
+    - uri:
+        prefix: "/metrics"
+    route:
+    - destination:
+        host: finbot-api.production.svc.cluster.local
+        subset: blue  # Always route health checks to active version
+      weight: 100
+    timeout: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+  
+  # API routes with traffic splitting capability
+  - match:
+    - uri:
+        prefix: "/api/"
+    route:
+    - destination:
+        host: finbot-api.production.svc.cluster.local
+        subset: blue
+      weight: 100  # Initially 100% to blue
+    - destination:
+        host: finbot-api.production.svc.cluster.local
+        subset: green
+      weight: 0    # Initially 0% to green
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+    headers:
+      request:
+        set:
+          x-forwarded-proto: https
+          x-deployment-color: blue  # Will be updated during deployment
+      response:
+        set:
+          x-content-type-options: nosniff
+          x-frame-options: DENY
+          x-xss-protection: "1; mode=block"
+          strict-transport-security: "max-age=31536000; includeSubDomains"
+
+---
+# DestinationRule for Blue-Green Web
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: finbot-web-destination
+  namespace: production
+spec:
+  host: finbot-web.production.svc.cluster.local
+  trafficPolicy:
+    loadBalancer:
+      simple: ROUND_ROBIN
+    connectionPool:
+      tcp:
+        maxConnections: 50
+        connectTimeout: 10s
+      http:
+        http1MaxPendingRequests: 25
+        http2MaxRequests: 50
+        maxRequestsPerConnection: 5
+        maxRetries: 2
+        idleTimeout: 60s
+    outlierDetection:
+      consecutiveGatewayErrors: 3
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 30
+  subsets:
+  - name: blue
+    labels:
+      color: blue
+  - name: green
+    labels:
+      color: green
+
+---
+# VirtualService for Blue-Green Web Traffic Management
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: finbot-web-traffic
+  namespace: production
+spec:
+  hosts:
+  - "app.finbot.com"
+  - "finbot-web.production.svc.cluster.local"
+  gateways:
+  - finbot-gateway
+  - mesh
+  http:
+  # Static assets (cached, always from active version)
+  - match:
+    - uri:
+        prefix: "/static/"
+    - uri:
+        prefix: "/assets/"
+    route:
+    - destination:
+        host: finbot-web.production.svc.cluster.local
+        subset: blue
+      weight: 100
+    timeout: 10s
+    headers:
+      response:
+        set:
+          cache-control: "public, max-age=31536000, immutable"
+          x-content-type-options: nosniff
+  
+  # Main web application with traffic splitting
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: finbot-web.production.svc.cluster.local
+        subset: blue
+      weight: 100  # Initially 100% to blue
+    - destination:
+        host: finbot-web.production.svc.cluster.local
+        subset: green
+      weight: 0    # Initially 0% to green
+    timeout: 15s
+    retries:
+      attempts: 3
+      perTryTimeout: 5s
+    headers:
+      response:
+        set:
+          x-content-type-options: nosniff
+          x-frame-options: SAMEORIGIN
+          x-xss-protection: "1; mode=block"
+          referrer-policy: "strict-origin-when-cross-origin"
+          x-deployment-color: blue  # Will be updated during deployment
+
+---
+# Canary Deployment Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canary-config
+  namespace: production
+data:
+  canary-strategy.yaml: |
+    # Canary deployment strategy configuration
+    strategy: "blue-green"
+    
+    # Traffic splitting stages for gradual rollout
+    stages:
+      - name: "initial"
+        blue_weight: 100
+        green_weight: 0
+        duration: "0s"
+      
+      - name: "canary-5"
+        blue_weight: 95
+        green_weight: 5
+        duration: "5m"
+        success_criteria:
+          error_rate_threshold: 0.01
+          response_time_p95_threshold: 2000
+      
+      - name: "canary-25"
+        blue_weight: 75
+        green_weight: 25
+        duration: "10m"
+        success_criteria:
+          error_rate_threshold: 0.01
+          response_time_p95_threshold: 2000
+      
+      - name: "canary-50"
+        blue_weight: 50
+        green_weight: 50
+        duration: "15m"
+        success_criteria:
+          error_rate_threshold: 0.01
+          response_time_p95_threshold: 2000
+      
+      - name: "full-rollout"
+        blue_weight: 0
+        green_weight: 100
+        duration: "0s"
+    
+    # Rollback criteria
+    rollback:
+      enabled: true
+      error_rate_threshold: 0.05
+      response_time_p95_threshold: 5000
+      consecutive_failures: 3
+      
+    # Health check configuration
+    health_checks:
+      endpoint: "/health"
+      timeout: "5s"
+      interval: "10s"
+      healthy_threshold: 3
+      unhealthy_threshold: 3
+
+---
+# Traffic Splitting Job for Gradual Rollout
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: traffic-splitter
+  namespace: production
+spec:
+  template:
+    spec:
+      serviceAccountName: blue-green-controller
+      restartPolicy: Never
+      containers:
+      - name: traffic-splitter
+        image: finbot/traffic-splitter:v1.0.0
+        env:
+        - name: NAMESPACE
+          value: "production"
+        - name: VIRTUAL_SERVICE_API
+          value: "finbot-api-traffic"
+        - name: VIRTUAL_SERVICE_WEB
+          value: "finbot-web-traffic"
+        - name: CANARY_CONFIG
+          value: "/config/canary-strategy.yaml"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.monitoring.svc.cluster.local:9090"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Starting gradual traffic splitting..."
+          
+          # Read canary configuration
+          source /config/canary-strategy.yaml
+          
+          # Function to update traffic weights
+          update_traffic_weights() {
+            local service=$1
+            local blue_weight=$2
+            local green_weight=$3
+            
+            echo "Updating $service traffic: Blue=$blue_weight%, Green=$green_weight%"
+            
+            kubectl patch virtualservice $service -n $NAMESPACE --type='json' -p="[
+              {
+                \"op\": \"replace\",
+                \"path\": \"/spec/http/1/route/0/weight\",
+                \"value\": $blue_weight
+              },
+              {
+                \"op\": \"replace\",
+                \"path\": \"/spec/http/1/route/1/weight\",
+                \"value\": $green_weight
+              }
+            ]"
+          }
+          
+          # Function to check metrics
+          check_metrics() {
+            local error_rate=$(curl -s "$PROMETHEUS_URL/api/v1/query?query=rate(http_requests_total{code=~\"5..\"}[5m])/rate(http_requests_total[5m])" | jq -r '.data.result[0].value[1] // "0"')
+            local response_time=$(curl -s "$PROMETHEUS_URL/api/v1/query?query=histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+            
+            echo "Current metrics - Error rate: $error_rate, P95 response time: ${response_time}s"
+            
+            # Check if metrics are within acceptable range
+            if (( $(echo "$error_rate > 0.01" | bc -l) )); then
+              echo "ERROR: Error rate too high: $error_rate"
+              return 1
+            fi
+            
+            if (( $(echo "$response_time > 2" | bc -l) )); then
+              echo "ERROR: Response time too high: ${response_time}s"
+              return 1
+            fi
+            
+            return 0
+          }
+          
+          # Execute canary deployment stages
+          for stage in initial canary-5 canary-25 canary-50 full-rollout; do
+            echo "Executing stage: $stage"
+            
+            case $stage in
+              "initial")
+                update_traffic_weights "finbot-api-traffic" 100 0
+                update_traffic_weights "finbot-web-traffic" 100 0
+                ;;
+              "canary-5")
+                update_traffic_weights "finbot-api-traffic" 95 5
+                update_traffic_weights "finbot-web-traffic" 95 5
+                sleep 300  # 5 minutes
+                ;;
+              "canary-25")
+                if check_metrics; then
+                  update_traffic_weights "finbot-api-traffic" 75 25
+                  update_traffic_weights "finbot-web-traffic" 75 25
+                  sleep 600  # 10 minutes
+                else
+                  echo "Metrics check failed, rolling back..."
+                  update_traffic_weights "finbot-api-traffic" 100 0
+                  update_traffic_weights "finbot-web-traffic" 100 0
+                  exit 1
+                fi
+                ;;
+              "canary-50")
+                if check_metrics; then
+                  update_traffic_weights "finbot-api-traffic" 50 50
+                  update_traffic_weights "finbot-web-traffic" 50 50
+                  sleep 900  # 15 minutes
+                else
+                  echo "Metrics check failed, rolling back..."
+                  update_traffic_weights "finbot-api-traffic" 100 0
+                  update_traffic_weights "finbot-web-traffic" 100 0
+                  exit 1
+                fi
+                ;;
+              "full-rollout")
+                if check_metrics; then
+                  update_traffic_weights "finbot-api-traffic" 0 100
+                  update_traffic_weights "finbot-web-traffic" 0 100
+                  echo "Canary deployment completed successfully!"
+                else
+                  echo "Final metrics check failed, rolling back..."
+                  update_traffic_weights "finbot-api-traffic" 100 0
+                  update_traffic_weights "finbot-web-traffic" 100 0
+                  exit 1
+                fi
+                ;;
+            esac
+            
+            echo "Stage $stage completed"
+          done
+          
+          echo "Traffic splitting completed successfully!"
+        volumeMounts:
+        - name: canary-config
+          mountPath: /config
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      volumes:
+      - name: canary-config
+        configMap:
+          name: canary-config
+
+---
+# Blue-Green Deployment Monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: blue-green-deployments
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: blue-green
+spec:
+  selector:
+    matchLabels:
+      app: finbot-api
+  namespaceSelector:
+    matchNames:
+    - production
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_label_color]
+      targetLabel: deployment_color
+    - sourceLabels: [__meta_kubernetes_pod_label_version]
+      targetLabel: deployment_version
+
+---
+# Blue-Green Deployment Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: blue-green-deployment-alerts
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: blue-green
+spec:
+  groups:
+  - name: blue-green.deployment.rules
+    interval: 30s
+    rules:
+    - alert: BlueGreenDeploymentHighErrorRate
+      expr: |
+        (
+          rate(http_requests_total{deployment_color="green",code=~"5.."}[5m]) /
+          rate(http_requests_total{deployment_color="green"}[5m])
+        ) > 0.02
+      for: 2m
+      labels:
+        severity: critical
+        component: deployment
+      annotations:
+        summary: "High error rate in green deployment"
+        description: "Green deployment error rate is {{ $value | humanizePercentage }} for the last 5 minutes."
+    
+    - alert: BlueGreenDeploymentHighLatency
+      expr: |
+        histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{deployment_color="green"}[5m])) > 3
+      for: 2m
+      labels:
+        severity: critical
+        component: deployment
+      annotations:
+        summary: "High latency in green deployment"
+        description: "Green deployment 95th percentile latency is {{ $value }}s for the last 5 minutes."
+    
+    - alert: BlueGreenTrafficSplitImbalance
+      expr: |
+        abs(
+          sum(rate(http_requests_total{deployment_color="blue"}[5m])) -
+          sum(rate(http_requests_total{deployment_color="green"}[5m]))
+        ) / (
+          sum(rate(http_requests_total{deployment_color="blue"}[5m])) +
+          sum(rate(http_requests_total{deployment_color="green"}[5m]))
+        ) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+        component: deployment
+      annotations:
+        summary: "Traffic split imbalance detected"
+        description: "Significant traffic imbalance between blue and green deployments."

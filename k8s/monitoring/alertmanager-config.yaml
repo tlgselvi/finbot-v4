@@ -1,0 +1,508 @@
+# FinBot v4 - AlertManager Configuration
+# Alert routing, notification channels, and escalation policies
+
+---
+# AlertManager Configuration Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-config
+  namespace: monitoring
+type: Opaque
+stringData:
+  alertmanager.yml: |
+    global:
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'alerts@finbot.com'
+      smtp_auth_username: 'alerts@finbot.com'
+      smtp_auth_password: 'smtp-password-from-vault'
+      slack_api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+      pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+      resolve_timeout: 5m
+    
+    # Inhibition rules to suppress alerts
+    inhibit_rules:
+    - source_matchers:
+      - severity="critical"
+      target_matchers:
+      - severity="warning"
+      equal: ['alertname', 'cluster', 'service']
+    
+    - source_matchers:
+      - alertname="FinBotAPIDown"
+      target_matchers:
+      - alertname="FinBotAPIHighErrorRate"
+      - alertname="FinBotAPIHighLatency"
+    
+    # Alert routing tree
+    route:
+      group_by: ['alertname', 'cluster', 'service']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+      routes:
+      
+      # Critical alerts go to PagerDuty and Slack immediately
+      - matchers:
+        - severity="critical"
+        receiver: 'critical-alerts'
+        group_wait: 0s
+        repeat_interval: 5m
+        continue: true
+      
+      # API service alerts
+      - matchers:
+        - service="finbot-api"
+        receiver: 'api-team'
+        group_by: ['alertname', 'service', 'method', 'endpoint']
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'api-critical'
+          group_wait: 0s
+          repeat_interval: 2m
+      
+      # Database alerts
+      - matchers:
+        - service="postgresql"
+        receiver: 'database-team'
+        group_by: ['alertname', 'service', 'datname']
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'database-critical'
+          group_wait: 0s
+          repeat_interval: 2m
+      
+      # Infrastructure alerts
+      - matchers:
+        - component="node"
+        - component="kubernetes"
+        receiver: 'infrastructure-team'
+        group_by: ['alertname', 'component', 'instance']
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'infrastructure-critical'
+          group_wait: 0s
+          repeat_interval: 2m
+      
+      # Security alerts
+      - matchers:
+        - component="security"
+        receiver: 'security-team'
+        group_wait: 0s
+        repeat_interval: 1m
+        routes:
+        - matchers:
+          - severity="critical"
+          receiver: 'security-critical'
+          group_wait: 0s
+          repeat_interval: 1m
+      
+      # Vault alerts
+      - matchers:
+        - component="vault"
+        receiver: 'vault-team'
+        group_wait: 0s
+        repeat_interval: 2m
+      
+      # Business hours vs after hours routing
+      - matchers:
+        - severity="warning"
+        receiver: 'business-hours'
+        active_time_intervals:
+        - business-hours
+      
+      - matchers:
+        - severity="warning"
+        receiver: 'after-hours'
+        active_time_intervals:
+        - after-hours
+    
+    # Time intervals
+    time_intervals:
+    - name: business-hours
+      time_intervals:
+      - times:
+        - start_time: '09:00'
+          end_time: '17:00'
+        weekdays: ['monday:friday']
+        location: 'America/New_York'
+    
+    - name: after-hours
+      time_intervals:
+      - times:
+        - start_time: '17:01'
+          end_time: '08:59'
+        weekdays: ['monday:friday']
+        location: 'America/New_York'
+      - times:
+        - start_time: '00:00'
+          end_time: '23:59'
+        weekdays: ['saturday', 'sunday']
+        location: 'America/New_York'
+    
+    # Notification receivers
+    receivers:
+    
+    # Default receiver
+    - name: 'default'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-alerts'
+        title: 'FinBot Alert'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          *Service:* {{ .Labels.service }}
+          {{ end }}
+        send_resolved: true
+    
+    # Critical alerts - PagerDuty + Slack
+    - name: 'critical-alerts'
+      pagerduty_configs:
+      - routing_key: 'pagerduty-integration-key-from-vault'
+        description: '{{ .GroupLabels.alertname }} - {{ .CommonAnnotations.summary }}'
+        severity: 'critical'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          service: '{{ .CommonLabels.service }}'
+          component: '{{ .CommonLabels.component }}'
+        links:
+        - href: 'https://grafana.finbot.com/d/finbot-overview'
+          text: 'FinBot Dashboard'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-critical'
+        title: '🚨 CRITICAL ALERT 🚨'
+        color: 'danger'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Service:* {{ .Labels.service }}
+          *Runbook:* https://runbooks.finbot.com/{{ .Labels.alertname }}
+          {{ end }}
+        send_resolved: true
+    
+    # API team alerts
+    - name: 'api-team'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-api-alerts'
+        title: 'API Service Alert'
+        color: 'warning'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Method:* {{ .Labels.method }}
+          *Endpoint:* {{ .Labels.endpoint }}
+          *Error Rate:* {{ .Labels.error_rate }}%
+          {{ end }}
+        send_resolved: true
+      email_configs:
+      - to: 'api-team@finbot.com'
+        subject: 'FinBot API Alert: {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Service: {{ .Labels.service }}
+          Severity: {{ .Labels.severity }}
+          {{ end }}
+    
+    # API critical alerts
+    - name: 'api-critical'
+      pagerduty_configs:
+      - routing_key: 'api-team-pagerduty-key'
+        description: 'CRITICAL: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-api-critical'
+        title: '🚨 API CRITICAL ALERT 🚨'
+        color: 'danger'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Method:* {{ .Labels.method }}
+          *Endpoint:* {{ .Labels.endpoint }}
+          {{ end }}
+        send_resolved: true
+    
+    # Database team alerts
+    - name: 'database-team'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-database-alerts'
+        title: 'Database Alert'
+        color: 'warning'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Database:* {{ .Labels.datname }}
+          {{ end }}
+        send_resolved: true
+      email_configs:
+      - to: 'database-team@finbot.com'
+        subject: 'FinBot Database Alert: {{ .GroupLabels.alertname }}'
+    
+    # Database critical alerts
+    - name: 'database-critical'
+      pagerduty_configs:
+      - routing_key: 'database-team-pagerduty-key'
+        description: 'CRITICAL DATABASE: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-database-critical'
+        title: '🚨 DATABASE CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    # Infrastructure team alerts
+    - name: 'infrastructure-team'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-infrastructure'
+        title: 'Infrastructure Alert'
+        color: 'warning'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Node:* {{ .Labels.instance }}
+          *Component:* {{ .Labels.component }}
+          {{ end }}
+        send_resolved: true
+    
+    # Infrastructure critical alerts
+    - name: 'infrastructure-critical'
+      pagerduty_configs:
+      - routing_key: 'infrastructure-team-pagerduty-key'
+        description: 'CRITICAL INFRASTRUCTURE: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-infrastructure-critical'
+        title: '🚨 INFRASTRUCTURE CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    # Security team alerts
+    - name: 'security-team'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-security'
+        title: '🔒 Security Alert'
+        color: 'danger'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Severity:* {{ .Labels.severity }}
+          {{ end }}
+        send_resolved: true
+      email_configs:
+      - to: 'security-team@finbot.com'
+        subject: 'SECURITY ALERT: {{ .GroupLabels.alertname }}'
+        body: |
+          SECURITY ALERT DETECTED
+          
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Time: {{ .StartsAt }}
+          {{ end }}
+    
+    # Security critical alerts
+    - name: 'security-critical'
+      pagerduty_configs:
+      - routing_key: 'security-team-pagerduty-key'
+        description: 'CRITICAL SECURITY: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-security-critical'
+        title: '🚨 SECURITY CRITICAL 🚨'
+        color: 'danger'
+        send_resolved: true
+    
+    # Vault team alerts
+    - name: 'vault-team'
+      pagerduty_configs:
+      - routing_key: 'vault-team-pagerduty-key'
+        description: 'VAULT ALERT: {{ .GroupLabels.alertname }}'
+        severity: 'critical'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-vault'
+        title: '🔐 Vault Alert'
+        color: 'danger'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Annotations.summary }}
+          *Description:* {{ .Annotations.description }}
+          *Instance:* {{ .Labels.instance }}
+          {{ end }}
+        send_resolved: true
+    
+    # Business hours alerts (email only)
+    - name: 'business-hours'
+      email_configs:
+      - to: 'team@finbot.com'
+        subject: 'FinBot Alert (Business Hours): {{ .GroupLabels.alertname }}'
+        body: |
+          {{ range .Alerts }}
+          Alert: {{ .Annotations.summary }}
+          Description: {{ .Annotations.description }}
+          Severity: {{ .Labels.severity }}
+          Service: {{ .Labels.service }}
+          {{ end }}
+    
+    # After hours alerts (Slack + email)
+    - name: 'after-hours'
+      slack_configs:
+      - api_url: '{{ template "slack.default.api_url" . }}'
+        channel: '#finbot-after-hours'
+        title: 'After Hours Alert'
+        color: 'warning'
+        send_resolved: true
+      email_configs:
+      - to: 'oncall@finbot.com'
+        subject: 'FinBot After Hours Alert: {{ .GroupLabels.alertname }}'
+    
+    # Notification templates
+    templates:
+    - '/etc/alertmanager/templates/*.tmpl'
+
+---
+# AlertManager Templates ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-templates
+  namespace: monitoring
+data:
+  default.tmpl: |
+    {{ define "slack.default.api_url" }}https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK{{ end }}
+    
+    {{ define "slack.default.title" }}
+    [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .GroupLabels.SortedPairs.Values | join " " }} {{ if gt (len .GroupLabels) 0 }}({{ .GroupLabels.alertname }}){{ end }}
+    {{ end }}
+    
+    {{ define "slack.default.text" }}
+    {{ range .Alerts }}
+    {{ if .Annotations.summary }}*Summary:* {{ .Annotations.summary }}{{ end }}
+    {{ if .Annotations.description }}*Description:* {{ .Annotations.description }}{{ end }}
+    *Details:*
+      {{ range .Labels.SortedPairs }} • *{{ .Name }}:* `{{ .Value }}`
+      {{ end }}
+    {{ end }}
+    {{ end }}
+    
+    {{ define "email.default.subject" }}
+    [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] FinBot Alert: {{ .GroupLabels.alertname }}
+    {{ end }}
+    
+    {{ define "email.default.html" }}
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <style>
+        body { font-family: Arial, sans-serif; }
+        .alert { margin: 20px 0; padding: 15px; border-left: 4px solid #f39c12; }
+        .critical { border-left-color: #e74c3c; }
+        .warning { border-left-color: #f39c12; }
+        .resolved { border-left-color: #27ae60; }
+        .label { background: #ecf0f1; padding: 2px 6px; margin: 2px; border-radius: 3px; }
+      </style>
+    </head>
+    <body>
+      <h2>FinBot Alert Notification</h2>
+      {{ range .Alerts }}
+      <div class="alert {{ .Labels.severity }}">
+        <h3>{{ .Annotations.summary }}</h3>
+        <p>{{ .Annotations.description }}</p>
+        <p><strong>Status:</strong> {{ .Status }}</p>
+        <p><strong>Started:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</p>
+        {{ if .EndsAt }}<p><strong>Ended:</strong> {{ .EndsAt.Format "2006-01-02 15:04:05 UTC" }}</p>{{ end }}
+        <div>
+          <strong>Labels:</strong>
+          {{ range .Labels.SortedPairs }}
+          <span class="label">{{ .Name }}: {{ .Value }}</span>
+          {{ end }}
+        </div>
+      </div>
+      {{ end }}
+    </body>
+    </html>
+    {{ end }}
+
+---
+# Additional Scrape Configs for Prometheus
+apiVersion: v1
+kind: Secret
+metadata:
+  name: additional-scrape-configs
+  namespace: monitoring
+type: Opaque
+stringData:
+  prometheus-additional.yaml: |
+    # External service monitoring
+    - job_name: 'external-api-health'
+      metrics_path: /health
+      static_configs:
+      - targets:
+        - 'api.finbot.com:443'
+      scheme: https
+      scrape_interval: 60s
+      scrape_timeout: 10s
+    
+    # Blackbox exporter for endpoint monitoring
+    - job_name: 'blackbox'
+      metrics_path: /probe
+      params:
+        module: [http_2xx]
+      static_configs:
+      - targets:
+        - 'https://api.finbot.com/health'
+        - 'https://app.finbot.com'
+      relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter.monitoring.svc.cluster.local:9115
+    
+    # Custom application metrics
+    - job_name: 'finbot-custom-metrics'
+      kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+          - production
+          - staging
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__

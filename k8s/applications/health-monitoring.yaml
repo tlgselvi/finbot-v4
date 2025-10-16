@@ -1,0 +1,693 @@
+# FinBot v4 - Application Health Checks and Monitoring
+# Comprehensive health monitoring, synthetic monitoring, and alerting
+
+---
+# Application Health Check Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-checker
+  namespace: production
+  labels:
+    app: health-checker
+    component: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-checker
+  template:
+    metadata:
+      labels:
+        app: health-checker
+        component: monitoring
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: health-checker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: health-checker
+        image: finbot/health-checker:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: CHECK_INTERVAL
+          value: "30s"
+        - name: TIMEOUT
+          value: "10s"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.monitoring.svc.cluster.local:9090"
+        - name: ALERT_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: health-checker-config
+              key: alert-webhook-url
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: health-checker-config
+              key: slack-webhook-url
+        volumeMounts:
+        - name: config
+          mountPath: /etc/health-checker
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: config
+        configMap:
+          name: health-checker-config
+      - name: tmp
+        emptyDir: {}
+
+---
+# Health Checker Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-checker-config
+  namespace: production
+  labels:
+    app: health-checker
+data:
+  config.yaml: |
+    # Health check configuration
+    checks:
+      # API Health Checks
+      - name: "finbot-api-health"
+        type: "http"
+        url: "http://finbot-api.production.svc.cluster.local:3001/health"
+        method: "GET"
+        timeout: "5s"
+        interval: "30s"
+        expected_status: 200
+        expected_body_contains: "healthy"
+        headers:
+          User-Agent: "FinBot-HealthChecker/1.0"
+        critical: true
+        
+      - name: "finbot-api-ready"
+        type: "http"
+        url: "http://finbot-api.production.svc.cluster.local:3001/ready"
+        method: "GET"
+        timeout: "5s"
+        interval: "30s"
+        expected_status: 200
+        critical: true
+        
+      - name: "finbot-api-database"
+        type: "http"
+        url: "http://finbot-api.production.svc.cluster.local:3001/health/database"
+        method: "GET"
+        timeout: "10s"
+        interval: "60s"
+        expected_status: 200
+        critical: true
+        
+      - name: "finbot-api-redis"
+        type: "http"
+        url: "http://finbot-api.production.svc.cluster.local:3001/health/redis"
+        method: "GET"
+        timeout: "5s"
+        interval: "60s"
+        expected_status: 200
+        critical: true
+        
+      # Web Health Checks
+      - name: "finbot-web-health"
+        type: "http"
+        url: "http://finbot-web.production.svc.cluster.local:80/health"
+        method: "GET"
+        timeout: "5s"
+        interval: "30s"
+        expected_status: 200
+        critical: true
+        
+      - name: "finbot-web-ready"
+        type: "http"
+        url: "http://finbot-web.production.svc.cluster.local:80/ready"
+        method: "GET"
+        timeout: "5s"
+        interval: "30s"
+        expected_status: 200
+        critical: true
+        
+      # Admin Health Checks
+      - name: "finbot-admin-health"
+        type: "http"
+        url: "http://finbot-admin.production.svc.cluster.local:80/health"
+        method: "GET"
+        timeout: "5s"
+        interval: "60s"
+        expected_status: 200
+        critical: false
+        
+      # Database Health Checks
+      - name: "postgresql-health"
+        type: "tcp"
+        host: "postgresql.database.svc.cluster.local"
+        port: 5432
+        timeout: "5s"
+        interval: "60s"
+        critical: true
+        
+      - name: "redis-health"
+        type: "tcp"
+        host: "redis.cache.svc.cluster.local"
+        port: 6379
+        timeout: "5s"
+        interval: "60s"
+        critical: true
+        
+      # External Dependencies
+      - name: "auth0-health"
+        type: "http"
+        url: "https://finbot.auth0.com/.well-known/jwks.json"
+        method: "GET"
+        timeout: "10s"
+        interval: "300s"
+        expected_status: 200
+        critical: false
+        
+      - name: "stripe-health"
+        type: "http"
+        url: "https://api.stripe.com/healthcheck"
+        method: "GET"
+        timeout: "10s"
+        interval: "300s"
+        expected_status: 200
+        critical: false
+    
+    # Alerting configuration
+    alerting:
+      enabled: true
+      channels:
+        - type: "webhook"
+          url: "${ALERT_WEBHOOK_URL}"
+          method: "POST"
+          headers:
+            Content-Type: "application/json"
+          template: |
+            {
+              "alert": "{{ .Name }}",
+              "status": "{{ .Status }}",
+              "message": "{{ .Message }}",
+              "timestamp": "{{ .Timestamp }}",
+              "critical": {{ .Critical }}
+            }
+        - type: "slack"
+          webhook_url: "${SLACK_WEBHOOK_URL}"
+          channel: "#finbot-health"
+          template: |
+            {
+              "text": "Health Check Alert: {{ .Name }}",
+              "attachments": [
+                {
+                  "color": "{{ if eq .Status \"failed\" }}danger{{ else }}good{{ end }}",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "value": "{{ .Status }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Message",
+                      "value": "{{ .Message }}",
+                      "short": false
+                    }
+                  ]
+                }
+              ]
+            }
+    
+    # Metrics configuration
+    metrics:
+      enabled: true
+      port: 8080
+      path: "/metrics"
+      labels:
+        service: "health-checker"
+        environment: "production"
+
+---
+# Synthetic Monitoring for User Journeys
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: synthetic-monitoring
+  namespace: production
+  labels:
+    app: synthetic-monitoring
+    component: monitoring
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: synthetic-monitoring
+          restartPolicy: OnFailure
+          containers:
+          - name: synthetic-tests
+            image: finbot/synthetic-tests:v1.0.0
+            env:
+            - name: BASE_URL
+              value: "https://app.finbot.com"
+            - name: API_BASE_URL
+              value: "https://api.finbot.com"
+            - name: TEST_USER_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: synthetic-test-credentials
+                  key: test-user-email
+            - name: TEST_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: synthetic-test-credentials
+                  key: test-user-password
+            - name: PROMETHEUS_PUSHGATEWAY_URL
+              value: "http://prometheus-pushgateway.monitoring.svc.cluster.local:9091"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Starting synthetic monitoring tests..."
+              
+              # Test 1: Homepage Load Test
+              echo "Test 1: Homepage load test"
+              START_TIME=$(date +%s%N)
+              curl -f -s -o /dev/null -w "%{http_code}" $BASE_URL
+              END_TIME=$(date +%s%N)
+              RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+              
+              echo "homepage_response_time_ms $RESPONSE_TIME" | curl -X POST --data-binary @- \
+                $PROMETHEUS_PUSHGATEWAY_URL/metrics/job/synthetic-monitoring/instance/homepage
+              
+              # Test 2: API Health Check
+              echo "Test 2: API health check"
+              START_TIME=$(date +%s%N)
+              API_STATUS=$(curl -f -s -o /dev/null -w "%{http_code}" $API_BASE_URL/health)
+              END_TIME=$(date +%s%N)
+              API_RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+              
+              echo "api_health_response_time_ms $API_RESPONSE_TIME" | curl -X POST --data-binary @- \
+                $PROMETHEUS_PUSHGATEWAY_URL/metrics/job/synthetic-monitoring/instance/api-health
+              
+              # Test 3: User Login Flow
+              echo "Test 3: User login flow"
+              START_TIME=$(date +%s%N)
+              
+              # Get login page
+              curl -c /tmp/cookies.txt -s $BASE_URL/login > /dev/null
+              
+              # Perform login
+              LOGIN_RESPONSE=$(curl -b /tmp/cookies.txt -c /tmp/cookies.txt -s -X POST \
+                -H "Content-Type: application/json" \
+                -d "{\"email\":\"$TEST_USER_EMAIL\",\"password\":\"$TEST_USER_PASSWORD\"}" \
+                -w "%{http_code}" \
+                $API_BASE_URL/api/auth/login)
+              
+              END_TIME=$(date +%s%N)
+              LOGIN_RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+              
+              if [ "$LOGIN_RESPONSE" = "200" ]; then
+                LOGIN_SUCCESS=1
+              else
+                LOGIN_SUCCESS=0
+              fi
+              
+              echo "login_response_time_ms $LOGIN_RESPONSE_TIME" | curl -X POST --data-binary @- \
+                $PROMETHEUS_PUSHGATEWAY_URL/metrics/job/synthetic-monitoring/instance/login
+              echo "login_success $LOGIN_SUCCESS" | curl -X POST --data-binary @- \
+                $PROMETHEUS_PUSHGATEWAY_URL/metrics/job/synthetic-monitoring/instance/login
+              
+              # Test 4: Dashboard Load (if login successful)
+              if [ "$LOGIN_SUCCESS" = "1" ]; then
+                echo "Test 4: Dashboard load test"
+                START_TIME=$(date +%s%N)
+                DASHBOARD_STATUS=$(curl -b /tmp/cookies.txt -s -o /dev/null -w "%{http_code}" $BASE_URL/dashboard)
+                END_TIME=$(date +%s%N)
+                DASHBOARD_RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+                
+                echo "dashboard_response_time_ms $DASHBOARD_RESPONSE_TIME" | curl -X POST --data-binary @- \
+                  $PROMETHEUS_PUSHGATEWAY_URL/metrics/job/synthetic-monitoring/instance/dashboard
+              fi
+              
+              # Test 5: API Endpoint Test
+              echo "Test 5: API endpoint test"
+              START_TIME=$(date +%s%N)
+              API_ENDPOINT_STATUS=$(curl -b /tmp/cookies.txt -s -o /dev/null -w "%{http_code}" \
+                $API_BASE_URL/api/user/profile)
+              END_TIME=$(date +%s%N)
+              API_ENDPOINT_RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+              
+              echo "api_endpoint_response_time_ms $API_ENDPOINT_RESPONSE_TIME" | curl -X POST --data-binary @- \
+                $PROMETHEUS_PUSHGATEWAY_URL/metrics/job/synthetic-monitoring/instance/api-endpoint
+              
+              # Cleanup
+              rm -f /tmp/cookies.txt
+              
+              echo "Synthetic monitoring tests completed successfully"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 65534
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+
+---
+# Application Performance Monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: finbot-applications
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: applications
+spec:
+  selector:
+    matchLabels:
+      component: backend
+  namespaceSelector:
+    matchNames:
+    - production
+  endpoints:
+  - port: metrics
+    interval: 15s
+    path: /metrics
+    relabelings:
+    - sourceLabels: [__meta_kubernetes_service_name]
+      targetLabel: service
+    - sourceLabels: [__meta_kubernetes_namespace]
+      targetLabel: namespace
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      targetLabel: pod
+
+---
+# Application Health Monitoring Rules
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: application-health-rules
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: applications
+spec:
+  groups:
+  - name: application.health.rules
+    interval: 30s
+    rules:
+    - alert: ApplicationDown
+      expr: |
+        up{job=~"finbot-.*"} == 0
+      for: 1m
+      labels:
+        severity: critical
+        component: application
+      annotations:
+        summary: "Application is down"
+        description: "Application {{ $labels.job }} has been down for more than 1 minute."
+    
+    - alert: ApplicationHighErrorRate
+      expr: |
+        (
+          rate(http_requests_total{job=~"finbot-.*",code=~"5.."}[5m]) /
+          rate(http_requests_total{job=~"finbot-.*"}[5m])
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        component: application
+      annotations:
+        summary: "High error rate detected"
+        description: "Application {{ $labels.job }} error rate is {{ $value | humanizePercentage }}."
+    
+    - alert: ApplicationHighLatency
+      expr: |
+        histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=~"finbot-.*"}[5m])) > 2
+      for: 5m
+      labels:
+        severity: warning
+        component: application
+      annotations:
+        summary: "High latency detected"
+        description: "Application {{ $labels.job }} 95th percentile latency is {{ $value }}s."
+    
+    - alert: DatabaseConnectionPoolHigh
+      expr: |
+        (
+          pg_stat_database_numbackends{datname="finbot_production"} /
+          pg_settings_max_connections
+        ) > 0.8
+      for: 5m
+      labels:
+        severity: warning
+        component: database
+      annotations:
+        summary: "Database connection pool usage high"
+        description: "Database connection pool usage is {{ $value | humanizePercentage }}."
+    
+    - alert: RedisMemoryHigh
+      expr: |
+        (
+          redis_memory_used_bytes /
+          redis_memory_max_bytes
+        ) > 0.9
+      for: 5m
+      labels:
+        severity: warning
+        component: cache
+      annotations:
+        summary: "Redis memory usage high"
+        description: "Redis memory usage is {{ $value | humanizePercentage }}."
+    
+    - alert: HealthCheckFailed
+      expr: |
+        health_check_success == 0
+      for: 2m
+      labels:
+        severity: critical
+        component: health-check
+      annotations:
+        summary: "Health check failed"
+        description: "Health check {{ $labels.check_name }} has been failing for more than 2 minutes."
+    
+    - alert: SyntheticMonitoringFailed
+      expr: |
+        synthetic_test_success == 0
+      for: 10m
+      labels:
+        severity: warning
+        component: synthetic-monitoring
+      annotations:
+        summary: "Synthetic monitoring test failed"
+        description: "Synthetic test {{ $labels.test_name }} has been failing for more than 10 minutes."
+
+---
+# Health Checker Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: health-checker
+  namespace: production
+
+---
+# Synthetic Monitoring Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: synthetic-monitoring
+  namespace: production
+
+---
+# Health Checker Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-checker
+  namespace: production
+  labels:
+    app: health-checker
+    component: monitoring
+spec:
+  selector:
+    app: health-checker
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+---
+# Application Monitoring Dashboard ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: application-monitoring-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  finbot-application-health.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "FinBot Application Health",
+        "tags": ["finbot", "health", "monitoring"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Application Uptime",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "up{job=~\"finbot-.*\"}",
+                "legendFormat": "{{job}}"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "thresholds"
+                },
+                "thresholds": {
+                  "steps": [
+                    {"color": "red", "value": 0},
+                    {"color": "green", "value": 1}
+                  ]
+                }
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Health Check Status",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "health_check_success",
+                "format": "table",
+                "instant": true
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Response Time Trends",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=~\"finbot-.*\"}[5m]))",
+                "legendFormat": "{{job}} - 95th percentile"
+              },
+              {
+                "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job=~\"finbot-.*\"}[5m]))",
+                "legendFormat": "{{job}} - 50th percentile"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Response Time (seconds)",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          },
+          {
+            "id": 4,
+            "title": "Error Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "rate(http_requests_total{job=~\"finbot-.*\",code=~\"5..\"}[5m]) / rate(http_requests_total{job=~\"finbot-.*\"}[5m])",
+                "legendFormat": "{{job}} - Error Rate"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Error Rate",
+                "min": 0,
+                "max": 1
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+          },
+          {
+            "id": 5,
+            "title": "Synthetic Test Results",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "synthetic_test_response_time_ms",
+                "legendFormat": "{{test_name}} - Response Time"
+              }
+            ],
+            "yAxes": [
+              {
+                "label": "Response Time (ms)",
+                "min": 0
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16}
+          }
+        ],
+        "time": {
+          "from": "now-1h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }

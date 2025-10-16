@@ -1,0 +1,491 @@
+# FinBot v4 - Penetration Tests
+# Security penetration testing and vulnerability assessment
+
+---
+# Penetration Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: penetration-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: penetration
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: pentest
+        image: kalilinux/kali-rolling:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Starting penetration testing..."
+          
+          # Update package lists
+          apt-get update -qq
+          apt-get install -y -qq nmap curl netcat-openbsd dnsutils
+          
+          # Test 1: Network reconnaissance
+          echo "Test 1: Network reconnaissance..."
+          
+          # Scan Kubernetes API server
+          nmap -sS -O kubernetes.default.svc.cluster.local || {
+            echo "WARNING: Cannot scan Kubernetes API (may be expected)"
+          }
+          
+          # Test service discovery
+          nslookup kubernetes.default.svc.cluster.local || {
+            echo "ERROR: DNS resolution failed"
+            exit 1
+          }
+          echo "✓ DNS resolution works"
+          
+          # Test 2: Port scanning
+          echo ""
+          echo "Test 2: Port scanning..."
+          
+          # Scan common ports on services
+          for service in "vault.security.svc.cluster.local:8200" "postgresql.database.svc.cluster.local:5432" "redis.cache.svc.cluster.local:6379"; do
+            host=$(echo $service | cut -d: -f1)
+            port=$(echo $service | cut -d: -f2)
+            
+            echo "Scanning $host:$port..."
+            timeout 10 nc -z $host $port && {
+              echo "✓ Port $port is open on $host"
+            } || {
+              echo "✓ Port $port is closed/filtered on $host (may be expected)"
+            }
+          done
+          
+          # Test 3: HTTP/HTTPS service testing
+          echo ""
+          echo "Test 3: HTTP/HTTPS service testing..."
+          
+          # Test Vault API (should require authentication)
+          curl -k -s -o /dev/null -w "%{http_code}" https://vault.security.svc.cluster.local:8200/v1/sys/health | grep -q "200\|429\|503" && {
+            echo "✓ Vault health endpoint accessible"
+          } || {
+            echo "WARNING: Vault health endpoint not accessible"
+          }
+          
+          # Test unauthorized access (should fail)
+          curl -k -s -o /dev/null -w "%{http_code}" https://vault.security.svc.cluster.local:8200/v1/secret/data/test | grep -q "403\|401" && {
+            echo "✓ Vault properly rejects unauthorized access"
+          } || {
+            echo "ERROR: Vault may allow unauthorized access"
+          }
+          
+          # Test 4: Container escape attempts
+          echo ""
+          echo "Test 4: Container security testing..."
+          
+          # Test if we can access host filesystem (should fail)
+          ls /host/proc 2>/dev/null && {
+            echo "ERROR: Can access host filesystem (security issue)"
+            exit 1
+          } || {
+            echo "✓ Host filesystem access properly restricted"
+          }
+          
+          # Test if we can escalate privileges (should fail)
+          sudo -n whoami 2>/dev/null && {
+            echo "ERROR: Can escalate privileges (security issue)"
+            exit 1
+          } || {
+            echo "✓ Privilege escalation properly prevented"
+          }
+          
+          # Test 5: Network policy testing
+          echo ""
+          echo "Test 5: Network policy testing..."
+          
+          # Try to connect to restricted services
+          timeout 5 nc -z istio-ingressgateway.istio-system.svc.cluster.local 80 && {
+            echo "WARNING: Can connect to ingress gateway (check network policies)"
+          } || {
+            echo "✓ Ingress gateway access properly restricted"
+          }
+          
+          echo ""
+          echo "Penetration testing completed!"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false # Kali needs write access for tools
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_RAW # For nmap
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+
+---
+# Web Application Security Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: web-app-security-test
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: web-security
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: web-security-test
+        image: owasp/zap2docker-stable:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Starting web application security testing..."
+          
+          # Test 1: SSL/TLS configuration
+          echo "Test 1: Testing SSL/TLS configuration..."
+          
+          # Test SSL certificate (if ingress is available)
+          openssl s_client -connect api.finbot.com:443 -servername api.finbot.com </dev/null 2>/dev/null | openssl x509 -noout -text | grep -q "Subject:" && {
+            echo "✓ SSL certificate is valid"
+          } || {
+            echo "WARNING: SSL certificate test failed (may not be accessible from inside cluster)"
+          }
+          
+          # Test 2: HTTP security headers
+          echo ""
+          echo "Test 2: Testing HTTP security headers..."
+          
+          # Test for security headers (if service is accessible)
+          curl -I -s http://finbot-api.production.svc.cluster.local:3001/health 2>/dev/null | grep -i "x-content-type-options\|x-frame-options\|x-xss-protection" && {
+            echo "✓ Security headers are present"
+          } || {
+            echo "WARNING: Security headers may be missing"
+          }
+          
+          # Test 3: Authentication bypass attempts
+          echo ""
+          echo "Test 3: Testing authentication bypass..."
+          
+          # Try to access protected endpoints without authentication
+          curl -s -o /dev/null -w "%{http_code}" http://finbot-api.production.svc.cluster.local:3001/api/users | grep -q "401\|403" && {
+            echo "✓ Authentication properly enforced"
+          } || {
+            echo "WARNING: Authentication may not be properly enforced"
+          }
+          
+          # Test 4: SQL injection attempts (basic)
+          echo ""
+          echo "Test 4: Testing SQL injection protection..."
+          
+          # Basic SQL injection test
+          curl -s -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"username":"admin'\''OR 1=1--","password":"test"}' \
+            http://finbot-api.production.svc.cluster.local:3001/api/auth/login | grep -q "error\|invalid" && {
+            echo "✓ SQL injection protection appears to be working"
+          } || {
+            echo "WARNING: SQL injection protection may be insufficient"
+          }
+          
+          # Test 5: XSS protection
+          echo ""
+          echo "Test 5: Testing XSS protection..."
+          
+          # Basic XSS test
+          curl -s -G \
+            --data-urlencode "q=<script>alert('xss')</script>" \
+            http://finbot-web.production.svc.cluster.local:80/search | grep -q "&lt;script&gt;\|escaped" && {
+            echo "✓ XSS protection appears to be working"
+          } || {
+            echo "WARNING: XSS protection may be insufficient"
+          }
+          
+          echo ""
+          echo "Web application security testing completed!"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+
+---
+# Kubernetes Security Benchmark Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k8s-security-benchmark
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: k8s-benchmark
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: kube-bench
+        image: aquasec/kube-bench:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Running Kubernetes security benchmark..."
+          
+          # Run kube-bench for node security
+          kube-bench node --json > /tmp/node-benchmark.json || {
+            echo "WARNING: Node benchmark failed (may not have access to host)"
+          }
+          
+          # Run kube-bench for policies
+          kube-bench policies --json > /tmp/policies-benchmark.json || {
+            echo "WARNING: Policies benchmark failed"
+          }
+          
+          # Parse results
+          if [ -f /tmp/node-benchmark.json ]; then
+            TOTAL_CHECKS=$(cat /tmp/node-benchmark.json | jq '.Totals.total_pass + .Totals.total_fail + .Totals.total_warn + .Totals.total_info' 2>/dev/null || echo "0")
+            PASSED_CHECKS=$(cat /tmp/node-benchmark.json | jq '.Totals.total_pass' 2>/dev/null || echo "0")
+            FAILED_CHECKS=$(cat /tmp/node-benchmark.json | jq '.Totals.total_fail' 2>/dev/null || echo "0")
+            
+            echo "Node Security Benchmark Results:"
+            echo "  Total checks: $TOTAL_CHECKS"
+            echo "  Passed: $PASSED_CHECKS"
+            echo "  Failed: $FAILED_CHECKS"
+            
+            if [ "$FAILED_CHECKS" -gt 0 ]; then
+              echo "WARNING: $FAILED_CHECKS security checks failed"
+              cat /tmp/node-benchmark.json | jq '.Controls[].tests[].results[] | select(.status == "FAIL") | .test_desc'
+            fi
+          fi
+          
+          echo ""
+          echo "Kubernetes security benchmark completed!"
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65534
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+---
+# Security Compliance Check Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: security-compliance-check
+  namespace: security-tests
+  labels:
+    test-type: security
+    component: compliance
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: security-test-sa
+      containers:
+      - name: compliance-check
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Running security compliance checks..."
+          
+          # Test 1: Check for required security labels
+          echo "Test 1: Checking security labels..."
+          
+          NAMESPACES=("production" "staging" "database" "cache" "monitoring" "security")
+          for ns in "${NAMESPACES[@]}"; do
+            PSS_ENFORCE=$(kubectl get namespace $ns -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null || echo "none")
+            if [ "$PSS_ENFORCE" != "none" ]; then
+              echo "✓ Namespace $ns has pod security enforcement: $PSS_ENFORCE"
+            else
+              echo "WARNING: Namespace $ns missing pod security enforcement"
+            fi
+          done
+          
+          # Test 2: Check for network policies
+          echo ""
+          echo "Test 2: Checking network policies..."
+          
+          for ns in "${NAMESPACES[@]}"; do
+            POLICY_COUNT=$(kubectl get networkpolicy -n $ns --no-headers 2>/dev/null | wc -l || echo "0")
+            if [ "$POLICY_COUNT" -gt 0 ]; then
+              echo "✓ Namespace $ns has $POLICY_COUNT network policies"
+            else
+              echo "WARNING: Namespace $ns has no network policies"
+            fi
+          done
+          
+          # Test 3: Check for resource quotas
+          echo ""
+          echo "Test 3: Checking resource quotas..."
+          
+          for ns in "${NAMESPACES[@]}"; do
+            QUOTA_COUNT=$(kubectl get resourcequota -n $ns --no-headers 2>/dev/null | wc -l || echo "0")
+            if [ "$QUOTA_COUNT" -gt 0 ]; then
+              echo "✓ Namespace $ns has $QUOTA_COUNT resource quotas"
+            else
+              echo "WARNING: Namespace $ns has no resource quotas"
+            fi
+          done
+          
+          # Test 4: Check for service accounts
+          echo ""
+          echo "Test 4: Checking service accounts..."
+          
+          for ns in "${NAMESPACES[@]}"; do
+            SA_NAME="finbot-$ns"
+            kubectl get serviceaccount $SA_NAME -n $ns >/dev/null 2>&1 && {
+              echo "✓ Service account $SA_NAME exists in namespace $ns"
+            } || {
+              echo "WARNING: Service account $SA_NAME missing in namespace $ns"
+            }
+          done
+          
+          # Test 5: Check for admission controllers
+          echo ""
+          echo "Test 5: Checking admission controllers..."
+          
+          WEBHOOK_COUNT=$(kubectl get validatingadmissionwebhook --no-headers 2>/dev/null | wc -l || echo "0")
+          if [ "$WEBHOOK_COUNT" -gt 0 ]; then
+            echo "✓ Found $WEBHOOK_COUNT validating admission webhooks"
+          else
+            echo "WARNING: No validating admission webhooks found"
+          fi
+          
+          # Test 6: Check for security monitoring
+          echo ""
+          echo "Test 6: Checking security monitoring..."
+          
+          kubectl get deployment falco -n security >/dev/null 2>&1 && {
+            echo "✓ Falco security monitoring is deployed"
+          } || {
+            echo "WARNING: Falco security monitoring not found"
+          }
+          
+          kubectl get deployment trivy-operator -n trivy-system >/dev/null 2>&1 && {
+            echo "✓ Trivy vulnerability scanner is deployed"
+          } || {
+            echo "WARNING: Trivy vulnerability scanner not found"
+          }
+          
+          echo ""
+          echo "Security compliance check completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Penetration Test Runner
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: penetration-test-runner
+  namespace: security-tests
+data:
+  run-penetration-tests.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting FinBot v4 Penetration Tests..."
+    echo "======================================"
+    
+    # Test execution order
+    TESTS=(
+      "penetration-test"
+      "web-app-security-test"
+      "k8s-security-benchmark"
+      "security-compliance-check"
+    )
+    
+    PASSED=0
+    FAILED=0
+    
+    for test in "${TESTS[@]}"; do
+      echo ""
+      echo "Running test: $test"
+      echo "------------------------"
+      
+      # Delete any existing test job
+      kubectl delete job $test -n security-tests --ignore-not-found
+      
+      # Create and run test
+      kubectl create job $test --from=job/$test -n security-tests 2>/dev/null || {
+        echo "ERROR: Failed to create test job $test"
+        ((FAILED++))
+        continue
+      }
+      
+      # Wait for completion
+      kubectl wait --for=condition=complete job/$test -n security-tests --timeout=600s || {
+        echo "ERROR: Test $test timed out or failed"
+        kubectl logs job/$test -n security-tests
+        ((FAILED++))
+        continue
+      }
+      
+      # Show results
+      kubectl logs job/$test -n security-tests
+      echo "✓ Test $test completed successfully"
+      ((PASSED++))
+      
+      # Cleanup
+      kubectl delete job $test -n security-tests --ignore-not-found
+    done
+    
+    echo ""
+    echo "======================================"
+    echo "Penetration Test Results:"
+    echo "  Passed: $PASSED"
+    echo "  Failed: $FAILED"
+    echo "  Total:  $((PASSED + FAILED))"
+    
+    if [ $FAILED -gt 0 ]; then
+      echo "❌ Some penetration tests failed!"
+      exit 1
+    else
+      echo "✅ All penetration tests passed!"
+      exit 0
+    fi

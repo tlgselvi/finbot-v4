@@ -1,0 +1,691 @@
+# FinBot v4 - Monitoring System Tests
+# Comprehensive tests for Prometheus, Grafana, Jaeger, and AlertManager
+
+---
+# Monitoring Test Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring-tests
+  labels:
+    name: monitoring-tests
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+---
+# Prometheus Functionality Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: prometheus-test
+  namespace: monitoring-tests
+  labels:
+    test-type: monitoring
+    component: prometheus
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: monitoring-test-sa
+      containers:
+      - name: prometheus-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing Prometheus functionality..."
+          
+          # Test 1: Prometheus health check
+          echo "Test 1: Prometheus health check..."
+          curl -f http://prometheus.monitoring.svc.cluster.local:9090/-/healthy || {
+            echo "ERROR: Prometheus health check failed"
+            exit 1
+          }
+          echo "✓ Prometheus is healthy"
+          
+          # Test 2: Prometheus readiness
+          echo ""
+          echo "Test 2: Prometheus readiness check..."
+          curl -f http://prometheus.monitoring.svc.cluster.local:9090/-/ready || {
+            echo "ERROR: Prometheus readiness check failed"
+            exit 1
+          }
+          echo "✓ Prometheus is ready"
+          
+          # Test 3: Query API
+          echo ""
+          echo "Test 3: Testing Prometheus query API..."
+          curl -f "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=up" | grep -q '"status":"success"' || {
+            echo "ERROR: Prometheus query API failed"
+            exit 1
+          }
+          echo "✓ Prometheus query API is working"
+          
+          # Test 4: Check targets
+          echo ""
+          echo "Test 4: Checking Prometheus targets..."
+          TARGETS=$(curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/targets" | grep -o '"health":"up"' | wc -l)
+          if [ "$TARGETS" -gt 0 ]; then
+            echo "✓ Found $TARGETS healthy targets"
+          else
+            echo "WARNING: No healthy targets found"
+          fi
+          
+          # Test 5: Check rules
+          echo ""
+          echo "Test 5: Checking Prometheus rules..."
+          curl -f "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/rules" | grep -q '"status":"success"' || {
+            echo "ERROR: Prometheus rules API failed"
+            exit 1
+          }
+          echo "✓ Prometheus rules are loaded"
+          
+          # Test 6: Check specific metrics
+          echo ""
+          echo "Test 6: Checking specific FinBot metrics..."
+          
+          # Check if node metrics are available
+          curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=node_cpu_seconds_total" | grep -q '"status":"success"' && {
+            echo "✓ Node metrics are available"
+          } || {
+            echo "WARNING: Node metrics not found"
+          }
+          
+          # Check if Kubernetes metrics are available
+          curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=kube_pod_info" | grep -q '"status":"success"' && {
+            echo "✓ Kubernetes metrics are available"
+          } || {
+            echo "WARNING: Kubernetes metrics not found"
+          }
+          
+          echo ""
+          echo "Prometheus functionality test completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Grafana Functionality Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-test
+  namespace: monitoring-tests
+  labels:
+    test-type: monitoring
+    component: grafana
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: monitoring-test-sa
+      containers:
+      - name: grafana-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing Grafana functionality..."
+          
+          # Test 1: Grafana health check
+          echo "Test 1: Grafana health check..."
+          curl -f http://grafana.monitoring.svc.cluster.local:3000/api/health || {
+            echo "ERROR: Grafana health check failed"
+            exit 1
+          }
+          echo "✓ Grafana is healthy"
+          
+          # Test 2: Grafana login page
+          echo ""
+          echo "Test 2: Grafana login page accessibility..."
+          curl -f http://grafana.monitoring.svc.cluster.local:3000/login | grep -q "Grafana" || {
+            echo "ERROR: Grafana login page not accessible"
+            exit 1
+          }
+          echo "✓ Grafana login page is accessible"
+          
+          # Test 3: Grafana API with admin credentials
+          echo ""
+          echo "Test 3: Testing Grafana API..."
+          curl -u admin:$GRAFANA_PASSWORD -f "http://grafana.monitoring.svc.cluster.local:3000/api/datasources" | grep -q "Prometheus" && {
+            echo "✓ Grafana API is working and Prometheus datasource is configured"
+          } || {
+            echo "WARNING: Grafana API test failed or Prometheus datasource not found"
+          }
+          
+          # Test 4: Check dashboards
+          echo ""
+          echo "Test 4: Checking Grafana dashboards..."
+          DASHBOARDS=$(curl -u admin:$GRAFANA_PASSWORD -s "http://grafana.monitoring.svc.cluster.local:3000/api/search?type=dash-db" | grep -o '"title"' | wc -l)
+          if [ "$DASHBOARDS" -gt 0 ]; then
+            echo "✓ Found $DASHBOARDS dashboards"
+          else
+            echo "WARNING: No dashboards found"
+          fi
+          
+          # Test 5: Test dashboard rendering
+          echo ""
+          echo "Test 5: Testing dashboard rendering..."
+          curl -u admin:$GRAFANA_PASSWORD -f "http://grafana.monitoring.svc.cluster.local:3000/api/dashboards/uid/finbot-overview" && {
+            echo "✓ FinBot overview dashboard is accessible"
+          } || {
+            echo "WARNING: FinBot overview dashboard not found"
+          }
+          
+          echo ""
+          echo "Grafana functionality test completed!"
+        env:
+        - name: GRAFANA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-test-credentials
+              key: password
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# AlertManager Functionality Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: alertmanager-test
+  namespace: monitoring-tests
+  labels:
+    test-type: monitoring
+    component: alertmanager
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: monitoring-test-sa
+      containers:
+      - name: alertmanager-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing AlertManager functionality..."
+          
+          # Test 1: AlertManager health check
+          echo "Test 1: AlertManager health check..."
+          curl -f http://alertmanager.monitoring.svc.cluster.local:9093/-/healthy || {
+            echo "ERROR: AlertManager health check failed"
+            exit 1
+          }
+          echo "✓ AlertManager is healthy"
+          
+          # Test 2: AlertManager readiness
+          echo ""
+          echo "Test 2: AlertManager readiness check..."
+          curl -f http://alertmanager.monitoring.svc.cluster.local:9093/-/ready || {
+            echo "ERROR: AlertManager readiness check failed"
+            exit 1
+          }
+          echo "✓ AlertManager is ready"
+          
+          # Test 3: AlertManager API
+          echo ""
+          echo "Test 3: Testing AlertManager API..."
+          curl -f "http://alertmanager.monitoring.svc.cluster.local:9093/api/v1/status" | grep -q '"status":"success"' || {
+            echo "ERROR: AlertManager API failed"
+            exit 1
+          }
+          echo "✓ AlertManager API is working"
+          
+          # Test 4: Check configuration
+          echo ""
+          echo "Test 4: Checking AlertManager configuration..."
+          curl -f "http://alertmanager.monitoring.svc.cluster.local:9093/api/v1/status" | grep -q '"configYAML"' || {
+            echo "ERROR: AlertManager configuration not loaded"
+            exit 1
+          }
+          echo "✓ AlertManager configuration is loaded"
+          
+          # Test 5: Send test alert
+          echo ""
+          echo "Test 5: Sending test alert..."
+          curl -X POST "http://alertmanager.monitoring.svc.cluster.local:9093/api/v1/alerts" \
+            -H "Content-Type: application/json" \
+            -d '[
+              {
+                "labels": {
+                  "alertname": "MonitoringTest",
+                  "service": "test",
+                  "severity": "info",
+                  "instance": "monitoring-test"
+                },
+                "annotations": {
+                  "summary": "Monitoring system test alert",
+                  "description": "This is a test alert from monitoring system tests"
+                },
+                "startsAt": "'$(date -Iseconds)'",
+                "endsAt": "'$(date -d '+1 minute' -Iseconds)'"
+              }
+            ]' || {
+            echo "ERROR: Failed to send test alert"
+            exit 1
+          }
+          echo "✓ Test alert sent successfully"
+          
+          # Test 6: Check alerts
+          echo ""
+          echo "Test 6: Checking active alerts..."
+          sleep 5
+          ALERTS=$(curl -s "http://alertmanager.monitoring.svc.cluster.local:9093/api/v1/alerts" | grep -o '"alertname":"MonitoringTest"' | wc -l)
+          if [ "$ALERTS" -gt 0 ]; then
+            echo "✓ Test alert is active in AlertManager"
+          else
+            echo "WARNING: Test alert not found in AlertManager"
+          fi
+          
+          echo ""
+          echo "AlertManager functionality test completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Jaeger Functionality Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jaeger-test
+  namespace: monitoring-tests
+  labels:
+    test-type: monitoring
+    component: jaeger
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: monitoring-test-sa
+      containers:
+      - name: jaeger-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing Jaeger functionality..."
+          
+          # Test 1: Jaeger Query health check
+          echo "Test 1: Jaeger Query health check..."
+          curl -f http://finbot-jaeger-query.monitoring.svc.cluster.local:16686/ | grep -q "Jaeger" || {
+            echo "ERROR: Jaeger Query UI not accessible"
+            exit 1
+          }
+          echo "✓ Jaeger Query UI is accessible"
+          
+          # Test 2: Jaeger API
+          echo ""
+          echo "Test 2: Testing Jaeger API..."
+          curl -f "http://finbot-jaeger-query.monitoring.svc.cluster.local:16686/api/services" | grep -q '\[' || {
+            echo "ERROR: Jaeger API failed"
+            exit 1
+          }
+          echo "✓ Jaeger API is working"
+          
+          # Test 3: Check Jaeger Collector
+          echo ""
+          echo "Test 3: Checking Jaeger Collector..."
+          curl -f "http://finbot-jaeger-collector.monitoring.svc.cluster.local:14269/" | grep -q "Jaeger" && {
+            echo "✓ Jaeger Collector is accessible"
+          } || {
+            echo "WARNING: Jaeger Collector health check failed"
+          }
+          
+          # Test 4: Check services
+          echo ""
+          echo "Test 4: Checking traced services..."
+          SERVICES=$(curl -s "http://finbot-jaeger-query.monitoring.svc.cluster.local:16686/api/services" | grep -o '"' | wc -l)
+          if [ "$SERVICES" -gt 2 ]; then
+            echo "✓ Found traced services in Jaeger"
+          else
+            echo "WARNING: No traced services found (may be expected in new deployment)"
+          fi
+          
+          # Test 5: Send test trace
+          echo ""
+          echo "Test 5: Sending test trace..."
+          # This would require a proper tracing client, so we'll just check the endpoint
+          curl -f "http://finbot-jaeger-collector.monitoring.svc.cluster.local:14268/api/traces" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"data":[{"traceID":"test","spans":[]}]}' && {
+            echo "✓ Jaeger trace ingestion endpoint is working"
+          } || {
+            echo "WARNING: Jaeger trace ingestion test failed"
+          }
+          
+          echo ""
+          echo "Jaeger functionality test completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Metrics Collection Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: metrics-collection-test
+  namespace: monitoring-tests
+  labels:
+    test-type: monitoring
+    component: metrics
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: monitoring-test-sa
+      containers:
+      - name: metrics-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing metrics collection..."
+          
+          # Test 1: Node Exporter metrics
+          echo "Test 1: Testing Node Exporter metrics..."
+          curl -f "http://node-exporter.monitoring.svc.cluster.local:9100/metrics" | grep -q "node_cpu_seconds_total" || {
+            echo "ERROR: Node Exporter metrics not available"
+            exit 1
+          }
+          echo "✓ Node Exporter metrics are available"
+          
+          # Test 2: Kube State Metrics
+          echo ""
+          echo "Test 2: Testing Kube State Metrics..."
+          curl -f "http://kube-state-metrics.monitoring.svc.cluster.local:8080/metrics" | grep -q "kube_pod_info" || {
+            echo "ERROR: Kube State Metrics not available"
+            exit 1
+          }
+          echo "✓ Kube State Metrics are available"
+          
+          # Test 3: Check if metrics are being scraped by Prometheus
+          echo ""
+          echo "Test 3: Checking if metrics are scraped by Prometheus..."
+          
+          # Check node metrics in Prometheus
+          curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=node_cpu_seconds_total" | grep -q '"status":"success"' && {
+            echo "✓ Node metrics are scraped by Prometheus"
+          } || {
+            echo "WARNING: Node metrics not found in Prometheus"
+          }
+          
+          # Check Kubernetes metrics in Prometheus
+          curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=kube_pod_info" | grep -q '"status":"success"' && {
+            echo "✓ Kubernetes metrics are scraped by Prometheus"
+          } || {
+            echo "WARNING: Kubernetes metrics not found in Prometheus"
+          }
+          
+          # Test 4: Check custom FinBot metrics (if available)
+          echo ""
+          echo "Test 4: Checking custom FinBot metrics..."
+          curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=finbot_api_requests_total" | grep -q '"status":"success"' && {
+            echo "✓ FinBot API metrics are available"
+          } || {
+            echo "INFO: FinBot API metrics not yet available (expected in new deployment)"
+          }
+          
+          # Test 5: Check recording rules
+          echo ""
+          echo "Test 5: Checking recording rules..."
+          curl -s "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query?query=finbot:node_cpu_usage" | grep -q '"status":"success"' && {
+            echo "✓ FinBot recording rules are working"
+          } || {
+            echo "WARNING: FinBot recording rules not found"
+          }
+          
+          echo ""
+          echo "Metrics collection test completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Dashboard Functionality Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dashboard-test
+  namespace: monitoring-tests
+  labels:
+    test-type: monitoring
+    component: dashboards
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: monitoring-test-sa
+      containers:
+      - name: dashboard-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing dashboard functionality..."
+          
+          # Test 1: Check dashboard provisioning
+          echo "Test 1: Checking dashboard provisioning..."
+          curl -u admin:$GRAFANA_PASSWORD -f "http://grafana.monitoring.svc.cluster.local:3000/api/search?type=dash-db" | grep -q "FinBot" && {
+            echo "✓ FinBot dashboards are provisioned"
+          } || {
+            echo "WARNING: FinBot dashboards not found"
+          }
+          
+          # Test 2: Test specific dashboards
+          echo ""
+          echo "Test 2: Testing specific dashboards..."
+          
+          # Test FinBot Overview dashboard
+          curl -u admin:$GRAFANA_PASSWORD -s "http://grafana.monitoring.svc.cluster.local:3000/api/dashboards/uid/finbot-overview" | grep -q '"dashboard"' && {
+            echo "✓ FinBot Overview dashboard is accessible"
+          } || {
+            echo "WARNING: FinBot Overview dashboard not found"
+          }
+          
+          # Test Infrastructure dashboard
+          curl -u admin:$GRAFANA_PASSWORD -s "http://grafana.monitoring.svc.cluster.local:3000/api/dashboards/uid/finbot-infrastructure" | grep -q '"dashboard"' && {
+            echo "✓ FinBot Infrastructure dashboard is accessible"
+          } || {
+            echo "WARNING: FinBot Infrastructure dashboard not found"
+          }
+          
+          # Test Security dashboard
+          curl -u admin:$GRAFANA_PASSWORD -s "http://grafana.monitoring.svc.cluster.local:3000/api/dashboards/uid/finbot-security" | grep -q '"dashboard"' && {
+            echo "✓ FinBot Security dashboard is accessible"
+          } || {
+            echo "WARNING: FinBot Security dashboard not found"
+          }
+          
+          # Test 3: Check datasource connectivity
+          echo ""
+          echo "Test 3: Checking datasource connectivity..."
+          curl -u admin:$GRAFANA_PASSWORD -s "http://grafana.monitoring.svc.cluster.local:3000/api/datasources/proxy/1/api/v1/query?query=up" | grep -q '"status":"success"' && {
+            echo "✓ Prometheus datasource is working"
+          } || {
+            echo "WARNING: Prometheus datasource connectivity issue"
+          }
+          
+          # Test 4: Test dashboard rendering with data
+          echo ""
+          echo "Test 4: Testing dashboard data rendering..."
+          curl -u admin:$GRAFANA_PASSWORD -s "http://grafana.monitoring.svc.cluster.local:3000/api/datasources/proxy/1/api/v1/query?query=node_cpu_seconds_total" | grep -q '"result"' && {
+            echo "✓ Dashboard queries return data"
+          } || {
+            echo "WARNING: Dashboard queries may not return data"
+          }
+          
+          echo ""
+          echo "Dashboard functionality test completed!"
+        env:
+        - name: GRAFANA_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: grafana-test-credentials
+              key: password
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Monitoring Test Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitoring-test-sa
+  namespace: monitoring-tests
+
+---
+# Monitoring Test RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-test-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: monitoring-test-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: monitoring-test-role
+subjects:
+- kind: ServiceAccount
+  name: monitoring-test-sa
+  namespace: monitoring-tests
+
+---
+# Grafana Test Credentials (placeholder)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-test-credentials
+  namespace: monitoring-tests
+type: Opaque
+data:
+  password: YWRtaW4= # admin (base64)
+
+---
+# Monitoring Test Runner Script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: monitoring-test-runner
+  namespace: monitoring-tests
+data:
+  run-monitoring-tests.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting FinBot v4 Monitoring Tests..."
+    echo "====================================="
+    
+    # Test execution order
+    TESTS=(
+      "prometheus-test"
+      "grafana-test"
+      "alertmanager-test"
+      "jaeger-test"
+      "metrics-collection-test"
+      "dashboard-test"
+    )
+    
+    PASSED=0
+    FAILED=0
+    
+    for test in "${TESTS[@]}"; do
+      echo ""
+      echo "Running test: $test"
+      echo "------------------------"
+      
+      # Delete any existing test job
+      kubectl delete job $test -n monitoring-tests --ignore-not-found
+      
+      # Create and run test
+      kubectl create job $test --from=job/$test -n monitoring-tests 2>/dev/null || {
+        echo "ERROR: Failed to create test job $test"
+        ((FAILED++))
+        continue
+      }
+      
+      # Wait for completion
+      kubectl wait --for=condition=complete job/$test -n monitoring-tests --timeout=300s || {
+        echo "ERROR: Test $test timed out or failed"
+        kubectl logs job/$test -n monitoring-tests
+        ((FAILED++))
+        continue
+      }
+      
+      # Show results
+      kubectl logs job/$test -n monitoring-tests
+      echo "✓ Test $test completed successfully"
+      ((PASSED++))
+      
+      # Cleanup
+      kubectl delete job $test -n monitoring-tests --ignore-not-found
+    done
+    
+    echo ""
+    echo "====================================="
+    echo "Monitoring Test Results:"
+    echo "  Passed: $PASSED"
+    echo "  Failed: $FAILED"
+    echo "  Total:  $((PASSED + FAILED))"
+    
+    if [ $FAILED -gt 0 ]; then
+      echo "❌ Some monitoring tests failed!"
+      exit 1
+    else
+      echo "✅ All monitoring tests passed!"
+      exit 0
+    fi

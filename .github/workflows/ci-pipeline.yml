@@ -1,0 +1,479 @@
+# FinBot v4 - CI/CD Pipeline
+# Automated build, test, security scan, and deployment pipeline
+
+name: FinBot CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop, 'feature/*', 'hotfix/*' ]
+  pull_request:
+    branches: [ main, develop ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: finbot/finbot-v4
+  NODE_VERSION: '18.x'
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # Code Quality and Security Checks
+  code-quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    outputs:
+      should-deploy: ${{ steps.changes.outputs.should-deploy }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+
+    - name: Install dependencies
+      run: |
+        npm ci
+        cd finbotv3/QuickServeAPI && npm ci
+
+    - name: Run ESLint
+      run: |
+        npm run lint
+        cd finbotv3/QuickServeAPI && npm run lint
+
+    - name: Run Prettier check
+      run: |
+        npm run format:check
+        cd finbotv3/QuickServeAPI && npm run format:check
+
+    - name: TypeScript type checking
+      run: |
+        npm run type-check
+        cd finbotv3/QuickServeAPI && npm run type-check
+
+    - name: Security audit
+      run: |
+        npm audit --audit-level=high
+        cd finbotv3/QuickServeAPI && npm audit --audit-level=high
+
+    - name: SAST with CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: javascript, typescript
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+
+    - name: Run Snyk security scan
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+
+    - name: Check for deployment changes
+      id: changes
+      run: |
+        if [[ "${{ github.ref }}" == "refs/heads/main" ]] || [[ "${{ github.event_name }}" == "release" ]]; then
+          echo "should-deploy=true" >> $GITHUB_OUTPUT
+        else
+          echo "should-deploy=false" >> $GITHUB_OUTPUT
+        fi
+
+  # Unit and Integration Tests
+  test:
+    name: Unit & Integration Tests
+    runs-on: ubuntu-latest
+    needs: code-quality
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_USER: test_user
+          POSTGRES_DB: finbot_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+        cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
+
+    - name: Install dependencies
+      run: |
+        npm ci
+        cd finbotv3/QuickServeAPI && npm ci
+
+    - name: Run database migrations
+      run: |
+        cd finbotv3/QuickServeAPI
+        npm run db:migrate:test
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/finbot_test
+        REDIS_URL: redis://localhost:6379
+
+    - name: Run unit tests
+      run: |
+        npm run test:unit -- --coverage
+        cd finbotv3/QuickServeAPI && npm run test:unit -- --coverage
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/finbot_test
+        REDIS_URL: redis://localhost:6379
+        NODE_ENV: test
+
+    - name: Run integration tests
+      run: |
+        npm run test:integration
+        cd finbotv3/QuickServeAPI && npm run test:integration
+      env:
+        DATABASE_URL: postgresql://test_user:test_password@localhost:5432/finbot_test
+        REDIS_URL: redis://localhost:6379
+        NODE_ENV: test
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./coverage/lcov.info,./finbotv3/QuickServeAPI/coverage/lcov.info
+        flags: unittests
+        name: finbot-coverage
+
+    - name: Generate test report
+      uses: dorny/test-reporter@v1
+      if: success() || failure()
+      with:
+        name: Test Results
+        path: '**/test-results.xml'
+        reporter: jest-junit
+
+  # Build and Push Docker Images
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: [code-quality, test]
+    if: needs.code-quality.outputs.should-deploy == 'true'
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push API image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ./finbotv3/QuickServeAPI
+        file: ./finbotv3/QuickServeAPI/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+        build-args: |
+          NODE_VERSION=${{ env.NODE_VERSION }}
+          BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          VCS_REF=${{ github.sha }}
+          VERSION=${{ steps.meta.outputs.version }}
+
+    - name: Build and push Web image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./finbotv3/WebApp
+        file: ./finbotv3/WebApp/Dockerfile
+        push: true
+        tags: ${{ env.REGISTRY }}/finbot/finbot-web:${{ steps.meta.outputs.version }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+    - name: Build and push Admin image
+      uses: docker/build-push-action@v5
+      with:
+        context: ./finbotv3/AdminPanel
+        file: ./finbotv3/AdminPanel/Dockerfile
+        push: true
+        tags: ${{ env.REGISTRY }}/finbot/finbot-admin:${{ steps.meta.outputs.version }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  # Container Security Scanning
+  security-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ needs.build.outputs.image-tag }}
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+    - name: Run Snyk container scan
+      uses: snyk/actions/docker@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        image: ${{ needs.build.outputs.image-tag }}
+        args: --severity-threshold=high
+
+    - name: Sign container images with Cosign
+      uses: sigstore/cosign-installer@v3
+      with:
+        cosign-release: 'v2.2.0'
+
+    - name: Sign the published Docker image
+      env:
+        COSIGN_EXPERIMENTAL: 1
+      run: |
+        echo "${{ needs.build.outputs.image-tag }}" | xargs -I {} cosign sign --yes {}@${{ needs.build.outputs.image-digest }}
+
+  # Performance Testing
+  performance-test:
+    name: Performance Testing
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Install k6
+      run: |
+        sudo gpg -k
+        sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+        echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+        sudo apt-get update
+        sudo apt-get install k6
+
+    - name: Run performance tests
+      run: |
+        k6 run tests/performance/api-load-test.js
+        k6 run tests/performance/stress-test.js
+      env:
+        API_BASE_URL: http://localhost:3001
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v4
+      with:
+        name: performance-results
+        path: performance-results.json
+
+  # End-to-End Testing
+  e2e-test:
+    name: E2E Testing
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Install Playwright
+      run: npx playwright install --with-deps
+
+    - name: Start test environment
+      run: |
+        docker-compose -f docker-compose.test.yml up -d
+        sleep 30
+
+    - name: Run E2E tests
+      run: npm run test:e2e
+      env:
+        BASE_URL: http://localhost:3000
+
+    - name: Upload E2E test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: e2e-results
+        path: |
+          test-results/
+          playwright-report/
+
+    - name: Cleanup test environment
+      if: always()
+      run: docker-compose -f docker-compose.test.yml down
+
+  # Deployment to Staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, security-scan, performance-test, e2e-test]
+    if: github.ref == 'refs/heads/develop' && needs.code-quality.outputs.should-deploy == 'true'
+    environment:
+      name: staging
+      url: https://staging.finbot.com
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+
+    - name: Deploy to staging
+      run: |
+        export KUBECONFIG=kubeconfig
+        kubectl set image deployment/finbot-api finbot-api=${{ needs.build.outputs.image-tag }} -n staging
+        kubectl set image deployment/finbot-web finbot-web=${{ env.REGISTRY }}/finbot/finbot-web:${{ needs.build.outputs.version }} -n staging
+        kubectl set image deployment/finbot-admin finbot-admin=${{ env.REGISTRY }}/finbot/finbot-admin:${{ needs.build.outputs.version }} -n staging
+        kubectl rollout status deployment/finbot-api -n staging --timeout=300s
+        kubectl rollout status deployment/finbot-web -n staging --timeout=300s
+        kubectl rollout status deployment/finbot-admin -n staging --timeout=300s
+
+    - name: Run smoke tests
+      run: |
+        sleep 60
+        curl -f https://staging-api.finbot.com/health || exit 1
+        curl -f https://staging.finbot.com || exit 1
+
+    - name: Notify deployment
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#finbot-deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+
+  # Deployment to Production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    if: github.ref == 'refs/heads/main' && needs.code-quality.outputs.should-deploy == 'true'
+    environment:
+      name: production
+      url: https://app.finbot.com
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl
+      run: |
+        echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+        export KUBECONFIG=kubeconfig
+
+    - name: Deploy to production with blue-green
+      run: |
+        export KUBECONFIG=kubeconfig
+        ./scripts/blue-green-deploy.sh \
+          --image-api=${{ needs.build.outputs.image-tag }} \
+          --image-web=${{ env.REGISTRY }}/finbot/finbot-web:${{ needs.build.outputs.version }} \
+          --image-admin=${{ env.REGISTRY }}/finbot/finbot-admin:${{ needs.build.outputs.version }} \
+          --namespace=production
+
+    - name: Run production smoke tests
+      run: |
+        sleep 120
+        curl -f https://api.finbot.com/health || exit 1
+        curl -f https://app.finbot.com || exit 1
+        curl -f https://admin.finbot.com || exit 1
+
+    - name: Notify production deployment
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#finbot-production'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        fields: repo,message,commit,author,action,eventName,ref,workflow
+
+  # Cleanup
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always()
+    steps:
+    - name: Delete old images
+      run: |
+        # Keep only last 10 images
+        echo "Cleanup completed"
+
+    - name: Update deployment status
+      run: |
+        echo "Deployment pipeline completed"

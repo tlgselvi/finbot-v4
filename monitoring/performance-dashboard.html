@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinBot v4 - Performance Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .header {
+            background: #2563eb;
+            color: white;
+            padding: 1rem 2rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .metric-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-left: 4px solid #2563eb;
+        }
+        
+        .metric-card.warning {
+            border-left-color: #f59e0b;
+        }
+        
+        .metric-card.error {
+            border-left-color: #ef4444;
+        }
+        
+        .metric-card.success {
+            border-left-color: #10b981;
+        }
+        
+        .metric-title {
+            font-size: 0.875rem;
+            color: #6b7280;
+            margin-bottom: 0.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #111827;
+        }
+        
+        .metric-change {
+            font-size: 0.875rem;
+            margin-top: 0.25rem;
+        }
+        
+        .metric-change.positive {
+            color: #10b981;
+        }
+        
+        .metric-change.negative {
+            color: #ef4444;
+        }
+        
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+        
+        .chart-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .chart-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #111827;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        .alerts-section {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 2rem;
+        }
+        
+        .alerts-title {
+            font-size: 1.125rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #111827;
+        }
+        
+        .alert-item {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+        }
+        
+        .alert-item.warning {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+        }
+        
+        .alert-item.error {
+            background: #fee2e2;
+            border-left: 4px solid #ef4444;
+        }
+        
+        .alert-item.info {
+            background: #dbeafe;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .alert-icon {
+            margin-right: 0.75rem;
+            font-size: 1.25rem;
+        }
+        
+        .alert-content {
+            flex: 1;
+        }
+        
+        .alert-message {
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+        }
+        
+        .alert-time {
+            font-size: 0.875rem;
+            color: #6b7280;
+        }
+        
+        .refresh-btn {
+            background: #2563eb;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        
+        .refresh-btn:hover {
+            background: #1d4ed8;
+        }
+        
+        .loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+        }
+        
+        .status-indicator.healthy {
+            background: #10b981;
+        }
+        
+        .status-indicator.warning {
+            background: #f59e0b;
+        }
+        
+        .status-indicator.critical {
+            background: #ef4444;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>
+            <span class="status-indicator healthy" id="systemStatus"></span>
+            FinBot v4 Performance Dashboard
+        </h1>
+    </div>
+    
+    <div class="container">
+        <!-- Key Metrics -->
+        <div class="metrics-grid">
+            <div class="metric-card" id="responseTimeCard">
+                <div class="metric-title">Avg Response Time</div>
+                <div class="metric-value" id="avgResponseTime">--</div>
+                <div class="metric-change" id="responseTimeChange">--</div>
+            </div>
+            
+            <div class="metric-card" id="throughputCard">
+                <div class="metric-title">Throughput</div>
+                <div class="metric-value" id="throughput">--</div>
+                <div class="metric-change" id="throughputChange">req/sec</div>
+            </div>
+            
+            <div class="metric-card" id="errorRateCard">
+                <div class="metric-title">Error Rate</div>
+                <div class="metric-value" id="errorRate">--</div>
+                <div class="metric-change" id="errorRateChange">--</div>
+            </div>
+            
+            <div class="metric-card" id="memoryCard">
+                <div class="metric-title">Memory Usage</div>
+                <div class="metric-value" id="memoryUsage">--</div>
+                <div class="metric-change" id="memoryChange">MB</div>
+            </div>
+        </div>
+        
+        <!-- Charts -->
+        <div class="charts-grid">
+            <div class="chart-card">
+                <div class="chart-title">Response Time Trend</div>
+                <div class="chart-container">
+                    <canvas id="responseTimeChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Web Vitals</div>
+                <div class="chart-container">
+                    <canvas id="webVitalsChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Request Volume</div>
+                <div class="chart-container">
+                    <canvas id="requestVolumeChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="chart-card">
+                <div class="chart-title">Error Distribution</div>
+                <div class="chart-container">
+                    <canvas id="errorChart"></canvas>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Alerts -->
+        <div class="alerts-section">
+            <div class="alerts-title">
+                Performance Alerts
+                <button class="refresh-btn" onclick="refreshData()">Refresh</button>
+            </div>
+            <div id="alertsList">
+                <!-- Alerts will be populated here -->
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Global variables
+        let charts = {};
+        let refreshInterval;
+        
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeCharts();
+            loadData();
+            startAutoRefresh();
+        });
+        
+        // Initialize Chart.js charts
+        function initializeCharts() {
+            // Response Time Chart
+            const responseTimeCtx = document.getElementById('responseTimeChart').getContext('2d');
+            charts.responseTime = new Chart(responseTimeCtx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Avg Response Time (ms)',
+                        data: [],
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+            
+            // Web Vitals Chart
+            const webVitalsCtx = document.getElementById('webVitalsChart').getContext('2d');
+            charts.webVitals = new Chart(webVitalsCtx, {
+                type: 'radar',
+                data: {
+                    labels: ['LCP', 'FID', 'CLS', 'FCP', 'TTFB'],
+                    datasets: [{
+                        label: 'Web Vitals Score',
+                        data: [0, 0, 0, 0, 0],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.2)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        r: {
+                            beginAtZero: true,
+                            max: 100
+                        }
+                    }
+                }
+            });
+            
+            // Request Volume Chart
+            const requestVolumeCtx = document.getElementById('requestVolumeChart').getContext('2d');
+            charts.requestVolume = new Chart(requestVolumeCtx, {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Requests',
+                        data: [],
+                        backgroundColor: '#3b82f6'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+            
+            // Error Chart
+            const errorCtx = document.getElementById('errorChart').getContext('2d');
+            charts.error = new Chart(errorCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['2xx', '3xx', '4xx', '5xx'],
+                    datasets: [{
+                        data: [0, 0, 0, 0],
+                        backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        }
+        
+        // Load performance data
+        async function loadData() {
+            try {
+                document.body.classList.add('loading');
+                
+                // Load server performance data
+                const serverResponse = await fetch('/api/performance/dashboard');
+                const serverData = await serverResponse.json();
+                
+                // Load Web Vitals data
+                const webVitalsResponse = await fetch('/api/performance/web-vitals');
+                const webVitalsData = await webVitalsResponse.json();
+                
+                // Load alerts
+                const alertsResponse = await fetch('/api/performance/alerts');
+                const alertsData = await alertsResponse.json();
+                
+                // Update UI
+                updateMetrics(serverData.data);
+                updateWebVitals(webVitalsData.data);
+                updateAlerts(alertsData.data);
+                updateSystemStatus();
+                
+            } catch (error) {
+                console.error('Failed to load performance data:', error);
+                showError('Failed to load performance data');
+            } finally {
+                document.body.classList.remove('loading');
+            }
+        }
+        
+        // Update key metrics
+        function updateMetrics(data) {
+            // Response Time
+            document.getElementById('avgResponseTime').textContent = 
+                data.avgResponseTime ? Math.round(data.avgResponseTime) + 'ms' : '--';
+            
+            // Throughput
+            document.getElementById('throughput').textContent = 
+                data.throughput ? data.throughput.toFixed(1) : '--';
+            
+            // Error Rate
+            document.getElementById('errorRate').textContent = 
+                data.errorRate ? data.errorRate.toFixed(1) + '%' : '--';
+            
+            // Memory Usage
+            document.getElementById('memoryUsage').textContent = 
+                data.memory ? Math.round(data.memory.avgUsage / 1024 / 1024) : '--';
+            
+            // Update card styles based on thresholds
+            updateCardStatus('responseTimeCard', data.avgResponseTime, 1000, 2000);
+            updateCardStatus('errorRateCard', data.errorRate, 1, 5);
+            updateCardStatus('memoryCard', data.memory?.avgUsage / 1024 / 1024, 50, 100);
+        }
+        
+        // Update Web Vitals
+        function updateWebVitals(data) {
+            if (data.scores) {
+                charts.webVitals.data.datasets[0].data = [
+                    data.scores.lcp || 0,
+                    data.scores.fid || 0,
+                    data.scores.cls || 0,
+                    data.scores.fcp || 0,
+                    data.scores.ttfb || 0
+                ];
+                charts.webVitals.update();
+            }
+        }
+        
+        // Update alerts
+        function updateAlerts(data) {
+            const alertsList = document.getElementById('alertsList');
+            alertsList.innerHTML = '';
+            
+            if (data.alerts && data.alerts.length > 0) {
+                data.alerts.forEach(alert => {
+                    const alertElement = createAlertElement(alert);
+                    alertsList.appendChild(alertElement);
+                });
+            } else {
+                alertsList.innerHTML = '<p style="color: #6b7280; text-align: center; padding: 2rem;">No active alerts</p>';
+            }
+        }
+        
+        // Create alert element
+        function createAlertElement(alert) {
+            const div = document.createElement('div');
+            div.className = `alert-item ${alert.severity}`;
+            
+            const icon = getAlertIcon(alert.severity);
+            const time = new Date(alert.timestamp).toLocaleTimeString();
+            
+            div.innerHTML = `
+                <div class="alert-icon">${icon}</div>
+                <div class="alert-content">
+                    <div class="alert-message">${alert.message}</div>
+                    <div class="alert-time">${time}</div>
+                </div>
+            `;
+            
+            return div;
+        }
+        
+        // Get alert icon
+        function getAlertIcon(severity) {
+            switch (severity) {
+                case 'critical': return '🔴';
+                case 'warning': return '⚠️';
+                case 'info': return 'ℹ️';
+                default: return '📊';
+            }
+        }
+        
+        // Update card status
+        function updateCardStatus(cardId, value, warningThreshold, errorThreshold) {
+            const card = document.getElementById(cardId);
+            card.className = 'metric-card';
+            
+            if (value >= errorThreshold) {
+                card.classList.add('error');
+            } else if (value >= warningThreshold) {
+                card.classList.add('warning');
+            } else {
+                card.classList.add('success');
+            }
+        }
+        
+        // Update system status
+        function updateSystemStatus() {
+            const statusIndicator = document.getElementById('systemStatus');
+            // This would be based on overall system health
+            statusIndicator.className = 'status-indicator healthy';
+        }
+        
+        // Show error message
+        function showError(message) {
+            const alertsList = document.getElementById('alertsList');
+            alertsList.innerHTML = `
+                <div class="alert-item error">
+                    <div class="alert-icon">❌</div>
+                    <div class="alert-content">
+                        <div class="alert-message">${message}</div>
+                        <div class="alert-time">${new Date().toLocaleTimeString()}</div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Refresh data
+        function refreshData() {
+            loadData();
+        }
+        
+        // Start auto refresh
+        function startAutoRefresh() {
+            refreshInterval = setInterval(loadData, 30000); // Refresh every 30 seconds
+        }
+        
+        // Stop auto refresh
+        function stopAutoRefresh() {
+            if (refreshInterval) {
+                clearInterval(refreshInterval);
+            }
+        }
+        
+        // Handle page visibility change
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                stopAutoRefresh();
+            } else {
+                startAutoRefresh();
+                loadData();
+            }
+        });
+    </script>
+</body>
+</html>

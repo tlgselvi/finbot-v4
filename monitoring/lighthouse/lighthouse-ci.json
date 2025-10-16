@@ -1,0 +1,77 @@
+{
+  "ci": {
+    "collect": {
+      "url": [
+        "http://localhost:3000",
+        "http://localhost:3000/dashboard",
+        "http://localhost:3000/approval-workflows",
+        "http://localhost:3000/approval-rules"
+      ],
+      "startServerCommand": "npm run start:ci",
+      "startServerReadyPattern": "Server is running",
+      "startServerReadyTimeout": 30000,
+      "numberOfRuns": 3,
+      "settings": {
+        "chromeFlags": "--no-sandbox --headless --disable-gpu",
+        "preset": "desktop",
+        "throttling": {
+          "rttMs": 40,
+          "throughputKbps": 10240,
+          "cpuSlowdownMultiplier": 1,
+          "requestLatencyMs": 0,
+          "downloadThroughputKbps": 0,
+          "uploadThroughputKbps": 0
+        },
+        "emulatedFormFactor": "desktop",
+        "locale": "en-US"
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:performance": ["error", {"minScore": 0.8}],
+        "categories:accessibility": ["error", {"minScore": 0.9}],
+        "categories:best-practices": ["error", {"minScore": 0.9}],
+        "categories:seo": ["error", {"minScore": 0.8}],
+        "categories:pwa": ["warn", {"minScore": 0.6}],
+        
+        "first-contentful-paint": ["error", {"maxNumericValue": 2000}],
+        "largest-contentful-paint": ["error", {"maxNumericValue": 3000}],
+        "first-meaningful-paint": ["warn", {"maxNumericValue": 2500}],
+        "speed-index": ["warn", {"maxNumericValue": 3000}],
+        "interactive": ["error", {"maxNumericValue": 4000}],
+        "total-blocking-time": ["error", {"maxNumericValue": 300}],
+        "cumulative-layout-shift": ["error", {"maxNumericValue": 0.1}],
+        
+        "unused-css-rules": ["warn", {"maxNumericValue": 20000}],
+        "unused-javascript": ["warn", {"maxNumericValue": 40000}],
+        "render-blocking-resources": ["warn", {"maxLength": 3}],
+        "unminified-css": ["error", {"maxLength": 0}],
+        "unminified-javascript": ["error", {"maxLength": 0}],
+        "efficient-animated-content": ["warn", {"maxNumericValue": 10000}],
+        "uses-optimized-images": ["warn", {"maxNumericValue": 20000}],
+        "uses-webp-images": ["warn", {"maxNumericValue": 15000}],
+        "uses-responsive-images": ["warn", {"maxNumericValue": 15000}],
+        "offscreen-images": ["warn", {"maxNumericValue": 10000}],
+        
+        "dom-size": ["warn", {"maxNumericValue": 1500}],
+        "uses-rel-preconnect": ["warn", {"maxNumericValue": 500}],
+        "uses-rel-preload": ["warn", {"maxNumericValue": 500}],
+        "font-display": ["warn", {"maxLength": 0}],
+        "third-party-summary": ["warn", {"maxNumericValue": 500}],
+        
+        "viewport": ["error", {"minScore": 1}],
+        "without-javascript": ["warn", {"minScore": 1}],
+        "first-cpu-idle": ["warn", {"maxNumericValue": 4000}],
+        "max-potential-fid": ["warn", {"maxNumericValue": 130}]
+      }
+    },
+    "upload": {
+      "target": "temporary-public-storage",
+      "reportFilenamePattern": "lighthouse-report-%%PATHNAME%%-%%DATETIME%%.html"
+    },
+    "server": {
+      "port": 9001,
+      "storage": "./lighthouse-reports"
+    }
+  }
+}

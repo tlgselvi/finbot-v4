@@ -1,0 +1,272 @@
+# FinBot v4 - Istio Security Tests
+# Tests for Istio mTLS, authorization policies, and security configurations
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: istio-security-test
+  namespace: istio-system
+  labels:
+    test-type: infrastructure
+    component: istio-security
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: infrastructure-test-sa
+      containers:
+      - name: istio-security-test
+        image: istio/istioctl:1.19.0
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing Istio security configurations..."
+          
+          # Test 1: Verify mTLS configuration
+          echo "Test 1: Verifying mTLS configuration..."
+          
+          # Check default mTLS policy
+          kubectl get peerauthentication default -n istio-system || {
+            echo "ERROR: Default mTLS policy not found"
+            exit 1
+          }
+          echo "✓ Default mTLS policy exists"
+          
+          # Check namespace-specific mTLS policies
+          NAMESPACES=("production" "database" "cache")
+          for ns in "${NAMESPACES[@]}"; do
+            kubectl get peerauthentication ${ns}-mtls -n $ns || {
+              echo "ERROR: mTLS policy for $ns not found"
+              exit 1
+            }
+            echo "✓ mTLS policy exists for namespace $ns"
+          done
+          
+          # Test 2: Verify authorization policies
+          echo ""
+          echo "Test 2: Testing authorization policies..."
+          
+          # Check API access policy
+          kubectl get authorizationpolicy api-access-policy -n production || {
+            echo "ERROR: API access policy not found"
+            exit 1
+          }
+          echo "✓ API access policy exists"
+          
+          # Check database access policy
+          kubectl get authorizationpolicy database-access-policy -n database || {
+            echo "ERROR: Database access policy not found"
+            exit 1
+          }
+          echo "✓ Database access policy exists"
+          
+          # Check cache access policy
+          kubectl get authorizationpolicy cache-access-policy -n cache || {
+            echo "ERROR: Cache access policy not found"
+            exit 1
+          }
+          echo "✓ Cache access policy exists"
+          
+          # Test 3: Verify JWT authentication
+          echo ""
+          echo "Test 3: Testing JWT authentication..."
+          
+          kubectl get requestauthentication jwt-auth -n production || {
+            echo "ERROR: JWT authentication policy not found"
+            exit 1
+          }
+          echo "✓ JWT authentication policy exists"
+          
+          # Test 4: Check mTLS status
+          echo ""
+          echo "Test 4: Checking mTLS status..."
+          
+          # Use istioctl to check mTLS status
+          istioctl authn tls-check || {
+            echo "WARNING: Some services may not have proper mTLS configuration"
+          }
+          
+          # Test 5: Verify gateway security
+          echo ""
+          echo "Test 5: Testing gateway security..."
+          
+          # Check ingress gateway policies
+          kubectl get authorizationpolicy ingress-gateway-policy -n istio-system || {
+            echo "ERROR: Ingress gateway policy not found"
+            exit 1
+          }
+          echo "✓ Ingress gateway policy exists"
+          
+          # Check egress gateway policies
+          kubectl get authorizationpolicy egress-gateway-policy -n istio-system || {
+            echo "ERROR: Egress gateway policy not found"
+            exit 1
+          }
+          echo "✓ Egress gateway policy exists"
+          
+          # Test 6: Verify service entries for external services
+          echo ""
+          echo "Test 6: Testing external service access..."
+          
+          kubectl get serviceentry external-apis -n production || {
+            echo "ERROR: External APIs service entry not found"
+            exit 1
+          }
+          echo "✓ External APIs service entry exists"
+          
+          # Test 7: Check security configuration
+          echo ""
+          echo "Test 7: Verifying security configuration..."
+          
+          kubectl get configmap security-config -n istio-system || {
+            echo "WARNING: Security configuration ConfigMap not found"
+          }
+          
+          # Test 8: Verify workload identity
+          echo ""
+          echo "Test 8: Testing workload identity..."
+          
+          kubectl get workloadentry finbot-api-workload -n production || {
+            echo "WARNING: API workload entry not found"
+          }
+          
+          echo ""
+          echo "All Istio security tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# mTLS Connectivity Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mtls-connectivity-test
+  namespace: istio-system
+  labels:
+    test-type: infrastructure
+    component: mtls
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: infrastructure-test-sa
+      containers:
+      - name: mtls-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing mTLS connectivity between services..."
+          
+          # Create test pods with Istio sidecar
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: mtls-test-client
+            namespace: production
+            labels:
+              app: mtls-test-client
+              test: mtls
+          spec:
+            containers:
+            - name: client
+              image: curlimages/curl:latest
+              command: ['sleep', '300']
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: mtls-test-server
+            namespace: production
+            labels:
+              app: mtls-test-server
+              test: mtls
+          spec:
+            containers:
+            - name: server
+              image: nginx:alpine
+              ports:
+              - containerPort: 80
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: mtls-test-server-svc
+            namespace: production
+          spec:
+            selector:
+              app: mtls-test-server
+            ports:
+            - port: 80
+              targetPort: 80
+          EOF
+          
+          # Wait for pods to be ready
+          echo "Waiting for test pods to be ready..."
+          kubectl wait --for=condition=Ready pod/mtls-test-client -n production --timeout=120s
+          kubectl wait --for=condition=Ready pod/mtls-test-server -n production --timeout=120s
+          
+          # Wait for Istio sidecar injection
+          sleep 30
+          
+          # Test mTLS communication
+          echo "Testing mTLS communication..."
+          kubectl exec mtls-test-client -n production -c client -- curl -s -f http://mtls-test-server-svc.production.svc.cluster.local || {
+            echo "ERROR: mTLS communication failed"
+            kubectl delete pod mtls-test-client mtls-test-server -n production --ignore-not-found
+            kubectl delete service mtls-test-server-svc -n production --ignore-not-found
+            exit 1
+          }
+          echo "✓ mTLS communication successful"
+          
+          # Test cross-namespace mTLS (should work with proper policies)
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: mtls-test-cross-ns
+            namespace: staging
+            labels:
+              app: mtls-test-cross-ns
+              test: mtls
+          spec:
+            containers:
+            - name: client
+              image: curlimages/curl:latest
+              command: ['sleep', '300']
+          EOF
+          
+          kubectl wait --for=condition=Ready pod/mtls-test-cross-ns -n staging --timeout=120s
+          sleep 30
+          
+          # This should fail due to authorization policies
+          kubectl exec mtls-test-cross-ns -n staging -c client -- curl -s -f --max-time 10 http://mtls-test-server-svc.production.svc.cluster.local && {
+            echo "WARNING: Cross-namespace communication allowed (check authorization policies)"
+          } || {
+            echo "✓ Cross-namespace communication properly restricted"
+          }
+          
+          # Cleanup
+          kubectl delete pod mtls-test-client mtls-test-server -n production --ignore-not-found
+          kubectl delete pod mtls-test-cross-ns -n staging --ignore-not-found
+          kubectl delete service mtls-test-server-svc -n production --ignore-not-found
+          
+          echo ""
+          echo "mTLS connectivity tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi

@@ -1,0 +1,145 @@
+# FinBot v4 - CDN and Asset Optimization Setup
+# Docker Compose configuration for CDN and static asset optimization
+
+version: '3.8'
+
+services:
+  # Nginx CDN Proxy
+  cdn-proxy:
+    image: nginx:alpine
+    container_name: finbot-cdn-proxy
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./nginx/cdn.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./public:/usr/share/nginx/html/static:ro
+      - ./nginx/cache:/var/cache/nginx
+    environment:
+      - NGINX_WORKER_PROCESSES=auto
+      - NGINX_WORKER_CONNECTIONS=1024
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cdn.rule=Host(`cdn.finbot.local`)"
+      - "traefik.http.services.cdn.loadbalancer.server.port=80"
+
+  # Redis for CDN caching
+  redis-cdn:
+    image: redis:7-alpine
+    container_name: finbot-redis-cdn
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis-cdn-data:/data
+      - ./redis/cdn.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    environment:
+      - REDIS_MAXMEMORY=512mb
+      - REDIS_MAXMEMORY_POLICY=allkeys-lru
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Varnish Cache (HTTP Accelerator)
+  varnish:
+    image: varnish:7.0
+    container_name: finbot-varnish
+    ports:
+      - "8081:80"
+    volumes:
+      - ./varnish/default.vcl:/etc/varnish/default.vcl:ro
+    environment:
+      - VARNISH_SIZE=256M
+      - VARNISH_BACKEND_HOST=finbot-api
+      - VARNISH_BACKEND_PORT=3001
+    networks:
+      - finbot-network
+    depends_on:
+      - finbot-api
+    restart: unless-stopped
+    command: >
+      sh -c "varnishd -F -f /etc/varnish/default.vcl 
+             -s malloc,256M 
+             -a :80 
+             -p default_ttl=3600 
+             -p default_grace=10"
+
+  # Image optimization service
+  imageproxy:
+    image: willnorris/imageproxy
+    container_name: finbot-imageproxy
+    ports:
+      - "8082:8080"
+    environment:
+      - IMAGEPROXY_ADDR=0.0.0.0:8080
+      - IMAGEPROXY_CACHE=/tmp/imageproxy
+      - IMAGEPROXY_CACHE_SIZE=1GB
+    volumes:
+      - imageproxy-cache:/tmp/imageproxy
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    command: >
+      -addr 0.0.0.0:8080
+      -cache /tmp/imageproxy
+      -cache.size 1GB
+      -verbose
+
+  # Asset optimization service
+  asset-optimizer:
+    build:
+      context: .
+      dockerfile: Dockerfile.asset-optimizer
+    container_name: finbot-asset-optimizer
+    volumes:
+      - ./public:/app/public
+      - ./optimized:/app/optimized
+    environment:
+      - NODE_ENV=production
+      - OPTIMIZATION_LEVEL=2
+    networks:
+      - finbot-network
+    restart: "no"
+    profiles:
+      - tools
+
+  # Monitoring for CDN performance
+  cdn-monitor:
+    image: prom/prometheus:latest
+    container_name: finbot-cdn-monitor
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/cdn-prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-cdn-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - finbot-network
+    restart: unless-stopped
+
+volumes:
+  redis-cdn-data:
+    driver: local
+  imageproxy-cache:
+    driver: local
+  prometheus-cdn-data:
+    driver: local
+
+networks:
+  finbot-network:
+    external: true

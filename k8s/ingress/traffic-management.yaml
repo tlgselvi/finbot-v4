@@ -1,0 +1,454 @@
+# FinBot v4 - Traffic Management and Rate Limiting
+# Advanced traffic management with rate limiting, geo-routing, and circuit breaker patterns
+
+---
+# Rate Limiting ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rate-limiting-config
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    component: rate-limiting
+data:
+  # Global rate limiting rules
+  global-rate-limit: |
+    # Global rate limit: 1000 requests per minute per IP
+    limit_req_zone $binary_remote_addr zone=global:10m rate=1000r/m;
+    
+    # API rate limit: 500 requests per minute per IP
+    limit_req_zone $binary_remote_addr zone=api:10m rate=500r/m;
+    
+    # Authentication rate limit: 10 requests per minute per IP
+    limit_req_zone $binary_remote_addr zone=auth:10m rate=10r/m;
+    
+    # File upload rate limit: 5 requests per minute per IP
+    limit_req_zone $binary_remote_addr zone=upload:10m rate=5r/m;
+    
+    # Admin rate limit: 100 requests per minute per IP
+    limit_req_zone $binary_remote_addr zone=admin:10m rate=100r/m;
+  
+  # Connection limiting
+  connection-limit: |
+    # Limit concurrent connections per IP
+    limit_conn_zone $binary_remote_addr zone=conn_limit_per_ip:10m;
+    limit_conn conn_limit_per_ip 20;
+    
+    # Limit concurrent connections to server
+    limit_conn_zone $server_name zone=conn_limit_per_server:10m;
+    limit_conn conn_limit_per_server 1000;
+  
+  # Geo-blocking configuration
+  geo-config: |
+    # Allow specific countries (ISO country codes)
+    geo $allowed_country {
+        default 0;
+        US 1;  # United States
+        CA 1;  # Canada
+        GB 1;  # United Kingdom
+        DE 1;  # Germany
+        FR 1;  # France
+        TR 1;  # Turkey
+        JP 1;  # Japan
+        AU 1;  # Australia
+    }
+    
+    # Block known bad IPs
+    geo $blocked_ip {
+        default 0;
+        # Add specific IP ranges to block
+        # 192.168.1.0/24 1;
+    }
+
+---
+# Advanced NGINX Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-advanced-config
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    component: advanced-config
+data:
+  # Main configuration additions
+  main-snippet: |
+    # Load balancing method
+    upstream backend {
+        least_conn;
+        keepalive 32;
+    }
+    
+    # Real IP configuration
+    set_real_ip_from 10.0.0.0/8;
+    set_real_ip_from 172.16.0.0/12;
+    set_real_ip_from 192.168.0.0/16;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+    
+    # Map for rate limiting based on user agent
+    map $http_user_agent $limit_bots {
+        default 0;
+        ~*(bot|crawler|spider|scraper) 1;
+    }
+    
+    # Map for API versioning
+    map $request_uri $api_version {
+        default v1;
+        ~*/api/v1/* v1;
+        ~*/api/v2/* v2;
+    }
+  
+  # HTTP configuration
+  http-snippet: |
+    # Brotli compression
+    brotli on;
+    brotli_comp_level 6;
+    brotli_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
+    
+    # Advanced caching
+    proxy_cache_path /tmp/nginx-cache levels=1:2 keys_zone=api_cache:10m max_size=1g inactive=60m use_temp_path=off;
+    
+    # Request ID generation
+    map $request_id $req_id {
+        default $request_id;
+    }
+    
+    # Circuit breaker simulation
+    map $upstream_response_time $circuit_breaker {
+        default 0;
+        ~^[5-9]\d*\..*$ 1;  # Response time > 5 seconds
+    }
+  
+  # Server configuration
+  server-snippet: |
+    # Security headers
+    add_header X-Request-ID $req_id always;
+    add_header X-Response-Time $request_time always;
+    add_header X-Upstream-Response-Time $upstream_response_time always;
+    
+    # CORS headers for API endpoints
+    location ~* ^/api/ {
+        add_header Access-Control-Allow-Origin $http_origin always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization" always;
+        add_header Access-Control-Expose-Headers "Content-Length,Content-Range" always;
+        add_header Access-Control-Allow-Credentials true always;
+        
+        if ($request_method = 'OPTIONS') {
+            add_header Access-Control-Max-Age 1728000;
+            add_header Content-Type 'text/plain; charset=utf-8';
+            add_header Content-Length 0;
+            return 204;
+        }
+    }
+    
+    # Block based on geo-location
+    if ($allowed_country = 0) {
+        return 403 "Access denied from your location";
+    }
+    
+    # Block known bad IPs
+    if ($blocked_ip = 1) {
+        return 403 "Access denied";
+    }
+    
+    # Bot rate limiting
+    if ($limit_bots = 1) {
+        set $limit_rate 10k;  # Limit bots to 10KB/s
+    }
+
+---
+# Ingress with Rate Limiting
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: finbot-ingress
+  namespace: production
+  labels:
+    app: finbot
+    component: ingress
+  annotations:
+    # Ingress class
+    kubernetes.io/ingress.class: "nginx"
+    
+    # SSL configuration
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    
+    # Rate limiting annotations
+    nginx.ingress.kubernetes.io/rate-limit-rps: "1000"
+    nginx.ingress.kubernetes.io/rate-limit-connections: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    
+    # Advanced configurations
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "5"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout invalid_header http_500 http_502 http_503"
+    
+    # Custom snippets
+    nginx.ingress.kubernetes.io/server-snippet: |
+      # API rate limiting
+      location ~* ^/api/auth/ {
+          limit_req zone=auth burst=5 nodelay;
+          limit_req_status 429;
+      }
+      
+      location ~* ^/api/upload/ {
+          limit_req zone=upload burst=2 nodelay;
+          limit_req_status 429;
+          client_max_body_size 50m;
+      }
+      
+      location ~* ^/api/admin/ {
+          limit_req zone=admin burst=10 nodelay;
+          limit_req_status 429;
+          
+          # Additional admin security
+          allow 10.0.0.0/8;
+          allow 172.16.0.0/12;
+          allow 192.168.0.0/16;
+          deny all;
+      }
+      
+      location ~* ^/api/ {
+          limit_req zone=api burst=50 nodelay;
+          limit_req_status 429;
+          
+          # API caching
+          proxy_cache api_cache;
+          proxy_cache_valid 200 302 10m;
+          proxy_cache_valid 404 1m;
+          proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+          proxy_cache_lock on;
+          add_header X-Cache-Status $upstream_cache_status;
+      }
+      
+      # Static assets caching
+      location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+          expires 1y;
+          add_header Cache-Control "public, immutable";
+          add_header X-Content-Type-Options nosniff;
+      }
+      
+      # Health check endpoint (no rate limiting)
+      location = /health {
+          access_log off;
+          return 200 "healthy\n";
+          add_header Content-Type text/plain;
+      }
+      
+      # Metrics endpoint (restricted access)
+      location = /metrics {
+          allow 10.0.0.0/8;
+          allow 172.16.0.0/12;
+          allow 192.168.0.0/16;
+          deny all;
+          access_log off;
+      }
+    
+    # Custom configuration snippet
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      # Request logging
+      set $custom_log_format '$remote_addr - $remote_user [$time_local] "$request" '
+                            '$status $body_bytes_sent "$http_referer" '
+                            '"$http_user_agent" "$http_x_forwarded_for" '
+                            'rt=$request_time uct="$upstream_connect_time" '
+                            'uht="$upstream_header_time" urt="$upstream_response_time"';
+      
+      # Circuit breaker logic
+      if ($circuit_breaker = 1) {
+          return 503 "Service temporarily unavailable";
+      }
+      
+      # Request ID propagation
+      proxy_set_header X-Request-ID $req_id;
+      proxy_set_header X-Forwarded-Request-ID $req_id;
+      
+      # Custom headers for debugging
+      add_header X-Served-By $hostname always;
+      add_header X-Cache-Date $time_iso8601 always;
+
+spec:
+  tls:
+  - hosts:
+    - finbot.com
+    - www.finbot.com
+    - api.finbot.com
+    - app.finbot.com
+    secretName: finbot-tls-secret
+  rules:
+  - host: finbot.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: finbot-web
+            port:
+              number: 3000
+  - host: www.finbot.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: finbot-web
+            port:
+              number: 3000
+  - host: api.finbot.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: finbot-api
+            port:
+              number: 3001
+  - host: app.finbot.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: finbot-web
+            port:
+              number: 3000
+
+---
+# Network Policy for Ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-network-policy
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from: []  # Allow from anywhere (internet traffic)
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 8443
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: production
+    ports:
+    - protocol: TCP
+      port: 3000
+    - protocol: TCP
+      port: 3001
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to: []  # Allow outbound for cert-manager ACME challenges
+    ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+
+---
+# Service Monitor for NGINX Ingress
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nginx-ingress
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+  namespaceSelector:
+    matchNames:
+    - ingress-nginx
+
+---
+# PrometheusRule for NGINX Ingress Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nginx-ingress-alerts
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+spec:
+  groups:
+  - name: nginx-ingress.rules
+    rules:
+    - alert: NginxIngressHighErrorRate
+      expr: rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) / rate(nginx_ingress_controller_requests[5m]) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High error rate in NGINX Ingress"
+        description: "NGINX Ingress error rate is {{ $value | humanizePercentage }} for {{ $labels.ingress }}"
+    
+    - alert: NginxIngressHighLatency
+      expr: histogram_quantile(0.95, rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])) > 2
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "High latency in NGINX Ingress"
+        description: "NGINX Ingress 95th percentile latency is {{ $value }}s for {{ $labels.ingress }}"
+    
+    - alert: NginxIngressCertificateExpiry
+      expr: (nginx_ingress_controller_ssl_expire_time_seconds - time()) / 86400 < 7
+      for: 1h
+      labels:
+        severity: critical
+      annotations:
+        summary: "SSL certificate expiring soon"
+        description: "SSL certificate for {{ $labels.host }} expires in {{ $value }} days"
+    
+    - alert: NginxIngressRateLimitHit
+      expr: rate(nginx_ingress_controller_requests{status="429"}[5m]) > 10
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Rate limit frequently hit"
+        description: "Rate limit is being hit {{ $value }} times per second for {{ $labels.ingress }}"

@@ -1,0 +1,202 @@
+# FinBot v4 - Asset Optimization Dockerfile
+# Container for optimizing static assets
+
+FROM node:18-alpine AS builder
+
+# Install system dependencies
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    libc6-compat \
+    vips-dev \
+    imagemagick
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm ci --only=production
+
+# Install optimization tools
+RUN npm install -g \
+    terser \
+    csso-cli \
+    imagemin-cli \
+    svgo \
+    @squoosh/cli
+
+# Copy source files
+COPY . .
+
+# Asset optimization stage
+FROM node:18-alpine AS optimizer
+
+# Install optimization tools
+RUN apk add --no-cache \
+    vips-dev \
+    imagemagick \
+    optipng \
+    jpegoptim \
+    gifsicle
+
+# Install Node.js optimization tools
+RUN npm install -g \
+    terser \
+    csso-cli \
+    imagemin-cli \
+    svgo \
+    @squoosh/cli \
+    postcss-cli \
+    autoprefixer
+
+WORKDIR /app
+
+# Copy files from builder
+COPY --from=builder /app .
+
+# Create optimization script
+RUN cat > optimize.sh << 'EOF'
+#!/bin/sh
+set -e
+
+echo "Starting asset optimization..."
+
+# Create output directory
+mkdir -p /app/optimized
+
+# Optimize JavaScript files
+echo "Optimizing JavaScript..."
+find /app/public -name "*.js" -type f | while read file; do
+    output_file="/app/optimized/${file#/app/public/}"
+    mkdir -p "$(dirname "$output_file")"
+    terser "$file" --compress --mangle --output "$output_file"
+    echo "Optimized: $file -> $output_file"
+done
+
+# Optimize CSS files
+echo "Optimizing CSS..."
+find /app/public -name "*.css" -type f | while read file; do
+    output_file="/app/optimized/${file#/app/public/}"
+    mkdir -p "$(dirname "$output_file")"
+    csso "$file" --output "$output_file"
+    echo "Optimized: $file -> $output_file"
+done
+
+# Optimize images
+echo "Optimizing images..."
+find /app/public -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) | while read file; do
+    output_file="/app/optimized/${file#/app/public/}"
+    mkdir -p "$(dirname "$output_file")"
+    
+    case "$file" in
+        *.png)
+            optipng -o7 -out "$output_file" "$file"
+            ;;
+        *.jpg|*.jpeg)
+            jpegoptim --max=85 --strip-all --stdout "$file" > "$output_file"
+            ;;
+    esac
+    echo "Optimized: $file -> $output_file"
+done
+
+# Optimize GIF files
+echo "Optimizing GIFs..."
+find /app/public -name "*.gif" -type f | while read file; do
+    output_file="/app/optimized/${file#/app/public/}"
+    mkdir -p "$(dirname "$output_file")"
+    gifsicle --optimize=3 --output "$output_file" "$file"
+    echo "Optimized: $file -> $output_file"
+done
+
+# Optimize SVG files
+echo "Optimizing SVGs..."
+find /app/public -name "*.svg" -type f | while read file; do
+    output_file="/app/optimized/${file#/app/public/}"
+    mkdir -p "$(dirname "$output_file")"
+    svgo "$file" --output "$output_file"
+    echo "Optimized: $file -> $output_file"
+done
+
+# Generate WebP versions of images
+echo "Generating WebP images..."
+find /app/public -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) | while read file; do
+    output_file="/app/optimized/${file#/app/public/}.webp"
+    mkdir -p "$(dirname "$output_file")"
+    
+    # Use vips for WebP conversion
+    vips copy "$file" "$output_file[Q=85]"
+    echo "Generated WebP: $file -> $output_file"
+done
+
+# Copy other files
+echo "Copying other files..."
+find /app/public -type f ! \( -name "*.js" -o -name "*.css" -o -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.gif" -o -name "*.svg" \) | while read file; do
+    output_file="/app/optimized/${file#/app/public/}"
+    mkdir -p "$(dirname "$output_file")"
+    cp "$file" "$output_file"
+done
+
+# Generate asset manifest
+echo "Generating asset manifest..."
+node -e "
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
+const manifest = {};
+const scanDir = (dir, baseDir = '') => {
+    const files = fs.readdirSync(dir);
+    files.forEach(file => {
+        const filePath = path.join(dir, file);
+        const relativePath = path.join(baseDir, file).replace(/\\\\/g, '/');
+        
+        if (fs.statSync(filePath).isDirectory()) {
+            scanDir(filePath, relativePath);
+        } else {
+            const content = fs.readFileSync(filePath);
+            const hash = crypto.createHash('md5').update(content).digest('hex');
+            const stats = fs.statSync(filePath);
+            
+            manifest[relativePath] = {
+                hash: hash.substring(0, 8),
+                size: stats.size,
+                lastModified: stats.mtime.toISOString()
+            };
+        }
+    });
+};
+
+scanDir('/app/optimized');
+fs.writeFileSync('/app/optimized/manifest.json', JSON.stringify(manifest, null, 2));
+console.log('Asset manifest generated');
+"
+
+echo "Asset optimization completed!"
+echo "Optimized files are in /app/optimized"
+
+# Show optimization statistics
+echo "Optimization Statistics:"
+echo "========================"
+original_size=$(du -sb /app/public | cut -f1)
+optimized_size=$(du -sb /app/optimized | cut -f1)
+savings=$((original_size - optimized_size))
+percentage=$((savings * 100 / original_size))
+
+echo "Original size: $(numfmt --to=iec $original_size)"
+echo "Optimized size: $(numfmt --to=iec $optimized_size)"
+echo "Savings: $(numfmt --to=iec $savings) ($percentage%)"
+EOF
+
+# Make script executable
+RUN chmod +x optimize.sh
+
+# Set default command
+CMD ["./optimize.sh"]
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD [ -f "/app/optimized/manifest.json" ] || exit 1

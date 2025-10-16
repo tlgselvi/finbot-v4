@@ -1,0 +1,258 @@
+# FinBot v4 - Load Testing Configuration
+# Artillery.js configuration for comprehensive load testing
+
+config:
+  target: 'http://localhost:3001'
+  phases:
+    # Warm-up phase
+    - duration: 60
+      arrivalRate: 5
+      name: "Warm-up"
+    
+    # Ramp-up phase
+    - duration: 120
+      arrivalRate: 5
+      rampTo: 50
+      name: "Ramp-up"
+    
+    # Sustained load phase
+    - duration: 300
+      arrivalRate: 50
+      name: "Sustained load"
+    
+    # Peak load phase
+    - duration: 120
+      arrivalRate: 50
+      rampTo: 100
+      name: "Peak load"
+    
+    # Cool-down phase
+    - duration: 60
+      arrivalRate: 100
+      rampTo: 10
+      name: "Cool-down"
+
+  # Global configuration
+  http:
+    timeout: 30
+    pool: 50
+  
+  # Variables for dynamic data
+  variables:
+    userIds:
+      - "user-001"
+      - "user-002"
+      - "user-003"
+      - "user-004"
+      - "user-005"
+    
+    transactionTypes:
+      - "transfer"
+      - "payment"
+      - "withdrawal"
+      - "investment"
+    
+    currencies:
+      - "TRY"
+      - "USD"
+      - "EUR"
+
+  # Plugins for enhanced reporting
+  plugins:
+    metrics-by-endpoint:
+      useOnlyRequestNames: true
+    
+    publish-metrics:
+      - type: "statsd"
+        host: "localhost"
+        port: 8125
+        prefix: "artillery.finbot"
+
+# Test scenarios
+scenarios:
+  # Authentication flow
+  - name: "Authentication Flow"
+    weight: 10
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "test@finbot.com"
+            password: "test123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      - get:
+          url: "/api/auth/profile"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+
+  # Dashboard and workflows
+  - name: "Dashboard Access"
+    weight: 30
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "test@finbot.com"
+            password: "test123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      - get:
+          url: "/api/approval-workflows/dashboard/summary"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+            - hasProperty: "data.summary"
+      
+      - get:
+          url: "/api/approval-workflows"
+          qs:
+            page: 1
+            limit: 20
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+            - contentType: "application/json"
+
+  # Workflow creation and approval
+  - name: "Workflow Operations"
+    weight: 25
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "test@finbot.com"
+            password: "test123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      - post:
+          url: "/api/approval-workflows"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            Content-Type: "application/json"
+          json:
+            transaction:
+              id: "{{ $randomUuid }}"
+              type: "{{ transactionTypes[$randomInt(0, 3)] }}"
+              amount: "{{ $randomInt(1000, 100000) }}"
+              currency: "{{ currencies[$randomInt(0, 2)] }}"
+              userId: "{{ userIds[$randomInt(0, 4)] }}"
+            requesterId: "{{ userIds[$randomInt(0, 4)] }}"
+          capture:
+            - json: "$.data.workflow.id"
+              as: "workflowId"
+          expect:
+            - statusCode: 201
+      
+      - get:
+          url: "/api/approval-workflows/{{ workflowId }}"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+
+  # Search and filtering
+  - name: "Search and Filter"
+    weight: 20
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "test@finbot.com"
+            password: "test123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      - get:
+          url: "/api/approval-workflows/search"
+          qs:
+            status: "pending"
+            page: 1
+            limit: 50
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+      
+      - get:
+          url: "/api/approval-workflows"
+          qs:
+            status: "approved"
+            sortBy: "createdAt"
+            sortOrder: "desc"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+
+  # Approval rules management
+  - name: "Rules Management"
+    weight: 15
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "admin@finbot.com"
+            password: "admin123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      - get:
+          url: "/api/approval-rules"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+          expect:
+            - statusCode: 200
+      
+      - post:
+          url: "/api/approval-rules"
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+            Content-Type: "application/json"
+          json:
+            name: "Load Test Rule {{ $randomInt(1000, 9999) }}"
+            transactionType: "{{ transactionTypes[$randomInt(0, 3)] }}"
+            amountThreshold: "{{ $randomInt(10000, 100000) }}"
+            currency: "TRY"
+            approvalLevels: 2
+            requiredRoles: [["finance"], ["admin"]]
+            createdBy: "{{ userIds[$randomInt(0, 4)] }}"
+          expect:
+            - statusCode: 201
+
+# Performance expectations
+expect:
+  # Response time thresholds
+  - statusCode: 200
+  - responseTime: 2000  # 2 seconds max
+  
+  # Success rate threshold
+  - successRate: 95    # 95% success rate minimum
+
+# Custom functions for data generation
+functions:
+  generateTransactionData: |
+    function(context, events, done) {
+      context.vars.transactionData = {
+        id: require('uuid').v4(),
+        type: context.vars.transactionTypes[Math.floor(Math.random() * context.vars.transactionTypes.length)],
+        amount: Math.floor(Math.random() * 100000) + 1000,
+        currency: context.vars.currencies[Math.floor(Math.random() * context.vars.currencies.length)],
+        userId: context.vars.userIds[Math.floor(Math.random() * context.vars.userIds.length)],
+        timestamp: new Date().toISOString()
+      };
+      return done();
+    }
+
+# Reporting configuration
+reporting:
+  json: "./tests/performance/results/load-test-results.json"
+  html: "./tests/performance/results/load-test-report.html"

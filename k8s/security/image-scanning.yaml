@@ -1,0 +1,544 @@
+# FinBot v4 - Container Image Scanning and Vulnerability Management
+# Trivy, Cosign, and admission controller configurations
+
+---
+# Trivy Operator Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trivy-system
+  labels:
+    name: trivy-system
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+---
+# Trivy Operator Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trivy-operator
+  namespace: trivy-system
+  labels:
+    app: trivy-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trivy-operator
+  template:
+    metadata:
+      labels:
+        app: trivy-operator
+    spec:
+      serviceAccountName: trivy-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: trivy-operator
+        image: aquasec/trivy-operator:0.16.4
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OPERATOR_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OPERATOR_TARGET_NAMESPACES
+          value: "production,staging,database,cache"
+        - name: OPERATOR_LOG_DEV_MODE
+          value: "false"
+        - name: OPERATOR_SCAN_JOB_TIMEOUT
+          value: "5m"
+        - name: OPERATOR_CONCURRENT_SCAN_JOBS_LIMIT
+          value: "10"
+        - name: OPERATOR_SCAN_JOB_RETRY_AFTER
+          value: "30s"
+        - name: OPERATOR_BATCH_DELETE_LIMIT
+          value: "10"
+        - name: OPERATOR_BATCH_DELETE_DELAY
+          value: "10s"
+        - name: OPERATOR_METRICS_BIND_ADDRESS
+          value: ":8080"
+        - name: OPERATOR_HEALTH_PROBE_BIND_ADDRESS
+          value: ":9090"
+        - name: OPERATOR_CIS_KUBERNETES_BENCHMARK_ENABLED
+          value: "true"
+        - name: OPERATOR_VULNERABILITY_SCANNER_ENABLED
+          value: "true"
+        - name: OPERATOR_CONFIG_AUDIT_SCANNER_ENABLED
+          value: "true"
+        - name: OPERATOR_RBAC_ASSESSMENT_SCANNER_ENABLED
+          value: "true"
+        - name: OPERATOR_INFRA_ASSESSMENT_SCANNER_ENABLED
+          value: "true"
+        - name: OPERATOR_CLUSTER_COMPLIANCE_ENABLED
+          value: "true"
+        ports:
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        - containerPort: 9090
+          name: healthz
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: healthz
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: healthz
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 512Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+
+---
+# Trivy Operator Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trivy-operator
+  namespace: trivy-system
+
+---
+# Trivy Operator RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: trivy-operator
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "replicationcontrollers", "services", "nodes", "limitranges", "resourcequotas", "persistentvolumes", "persistentvolumeclaims", "configmaps", "secrets", "serviceaccounts"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["replicasets", "deployments", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies", "ingresses"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["policy"]
+  resources: ["podsecuritypolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["rbac.authorization.k8s.io"]
+  resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apiextensions.k8s.io"]
+  resources: ["customresourcedefinitions"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["aquasecurity.github.io"]
+  resources: ["*"]
+  verbs: ["*"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: trivy-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trivy-operator
+subjects:
+- kind: ServiceAccount
+  name: trivy-operator
+  namespace: trivy-system
+
+---
+# Trivy Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trivy-operator-config
+  namespace: trivy-system
+data:
+  trivy.repository: "ghcr.io/aquasecurity/trivy"
+  trivy.tag: "0.47.0"
+  trivy.mode: "Standalone"
+  trivy.additionalVulnerabilityReportFields: "Description,Links,CVSS,Target,Class,PackageType"
+  trivy.severity: "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL"
+  trivy.slow: "true"
+  trivy.dbRepository: "ghcr.io/aquasecurity/trivy-db"
+  trivy.javaDbRepository: "ghcr.io/aquasecurity/trivy-java-db"
+  trivy.command: "image"
+  trivy.serverInsecure: "false"
+  trivy.ignoreUnfixed: "false"
+  trivy.timeout: "5m0s"
+  trivy.resources.requests.cpu: "100m"
+  trivy.resources.requests.memory: "100M"
+  trivy.resources.limits.cpu: "500m"
+  trivy.resources.limits.memory: "500M"
+
+---
+# Image Policy Webhook Configuration
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionWebhook
+metadata:
+  name: image-policy-webhook
+spec:
+  clientConfig:
+    service:
+      name: image-policy-webhook
+      namespace: security
+      path: /validate-image
+  rules:
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: [""]
+    apiVersions: ["v1"]
+    resources: ["pods"]
+  - operations: ["CREATE", "UPDATE"]
+    apiGroups: ["apps"]
+    apiVersions: ["v1"]
+    resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+  admissionReviewVersions: ["v1", "v1beta1"]
+  sideEffects: None
+  failurePolicy: Fail
+  namespaceSelector:
+    matchLabels:
+      image-policy: "enabled"
+
+---
+# Image Policy Webhook Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: image-policy-webhook
+  namespace: security
+spec:
+  selector:
+    app: image-policy-webhook
+  ports:
+  - name: webhook
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+
+---
+# Image Policy Webhook Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-policy-webhook
+  namespace: security
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: image-policy-webhook
+  template:
+    metadata:
+      labels:
+        app: image-policy-webhook
+    spec:
+      serviceAccountName: image-policy-webhook
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: webhook
+        image: finbot/image-policy-webhook:v1.0.0
+        ports:
+        - containerPort: 8443
+          name: webhook
+        env:
+        - name: TLS_CERT_FILE
+          value: /etc/certs/tls.crt
+        - name: TLS_PRIVATE_KEY_FILE
+          value: /etc/certs/tls.key
+        - name: ALLOWED_REGISTRIES
+          value: "docker.io/library,gcr.io/distroless,ghcr.io/finbot,registry.k8s.io,quay.io"
+        - name: BLOCKED_REGISTRIES
+          value: "docker.io/untrusted"
+        - name: MAX_CRITICAL_VULNERABILITIES
+          value: "0"
+        - name: MAX_HIGH_VULNERABILITIES
+          value: "2"
+        - name: REQUIRE_SIGNATURE_VERIFICATION
+          value: "true"
+        volumeMounts:
+        - name: certs
+          mountPath: /etc/certs
+          readOnly: true
+        - name: cosign-keys
+          mountPath: /etc/cosign
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8443
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: certs
+        secret:
+          secretName: image-policy-webhook-certs
+      - name: cosign-keys
+        configMap:
+          name: cosign-public-keys
+
+---
+# Image Policy Webhook Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-policy-webhook
+  namespace: security
+
+---
+# Image Policy Webhook RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: image-policy-webhook
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["aquasecurity.github.io"]
+  resources: ["vulnerabilityreports"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: image-policy-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: image-policy-webhook
+subjects:
+- kind: ServiceAccount
+  name: image-policy-webhook
+  namespace: security
+
+---
+# Cosign Public Keys ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cosign-public-keys
+  namespace: security
+data:
+  cosign.pub: |
+    -----BEGIN PUBLIC KEY-----
+    # Cosign public key for image signature verification
+    # This should be replaced with your actual public key
+    -----END PUBLIC KEY-----
+
+---
+# Vulnerability Report CRD (Trivy Operator will create this)
+# This is just for reference
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vulnerabilityreports.aquasecurity.github.io
+spec:
+  group: aquasecurity.github.io
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+          status:
+            type: object
+  scope: Namespaced
+  names:
+    plural: vulnerabilityreports
+    singular: vulnerabilityreport
+    kind: VulnerabilityReport
+
+---
+# Image Scanning CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: image-vulnerability-scan
+  namespace: security
+spec:
+  schedule: "0 2 * * *" # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: image-scanner
+          restartPolicy: OnFailure
+          containers:
+          - name: scanner
+            image: aquasec/trivy:0.47.0
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Starting vulnerability scan..."
+              
+              # Scan all images in production namespace
+              kubectl get pods -n production -o jsonpath='{.items[*].spec.containers[*].image}' | tr ' ' '\n' | sort -u | while read image; do
+                echo "Scanning image: $image"
+                trivy image --format json --output /tmp/scan-result.json "$image"
+                
+                # Check for critical vulnerabilities
+                CRITICAL_COUNT=$(cat /tmp/scan-result.json | jq '.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL") | length' | wc -l)
+                HIGH_COUNT=$(cat /tmp/scan-result.json | jq '.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH") | length' | wc -l)
+                
+                if [ "$CRITICAL_COUNT" -gt 0 ]; then
+                  echo "ALERT: $CRITICAL_COUNT critical vulnerabilities found in $image"
+                  # Send alert to monitoring system
+                fi
+                
+                if [ "$HIGH_COUNT" -gt 5 ]; then
+                  echo "WARNING: $HIGH_COUNT high vulnerabilities found in $image"
+                fi
+              done
+              
+              echo "Vulnerability scan completed!"
+            env:
+            - name: TRIVY_CACHE_DIR
+              value: /tmp/trivy-cache
+            volumeMounts:
+            - name: cache
+              mountPath: /tmp/trivy-cache
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 1Gi
+          volumes:
+          - name: cache
+            emptyDir: {}
+
+---
+# Image Scanner Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-scanner
+  namespace: security
+
+---
+# Image Scanner RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: image-scanner
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: image-scanner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: image-scanner
+subjects:
+- kind: ServiceAccount
+  name: image-scanner
+  namespace: security
+
+---
+# Security Compliance Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-compliance-dashboard
+  namespace: monitoring
+data:
+  dashboard.json: |
+    {
+      "dashboard": {
+        "title": "FinBot Security Compliance",
+        "panels": [
+          {
+            "title": "Vulnerability Summary",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum(trivy_image_vulnerabilities) by (severity)"
+              }
+            ]
+          },
+          {
+            "title": "Image Scan Results",
+            "type": "table",
+            "targets": [
+              {
+                "expr": "trivy_image_vulnerabilities"
+              }
+            ]
+          },
+          {
+            "title": "Security Policy Violations",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(admission_webhook_rejections_total[5m])"
+              }
+            ]
+          }
+        ]
+      }
+    }

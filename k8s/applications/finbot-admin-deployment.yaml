@@ -1,0 +1,638 @@
+# FinBot v4 - Admin Panel Deployment
+# Production-ready admin panel deployment with enhanced security
+
+---
+# FinBot Admin Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finbot-admin
+  namespace: production
+  labels:
+    app: finbot-admin
+    version: v4.0.0
+    component: admin
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: finbot-admin
+  template:
+    metadata:
+      labels:
+        app: finbot-admin
+        version: v4.0.0
+        component: admin
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+        sidecar.istio.io/inject: "true"
+        sidecar.istio.io/proxyCPU: "50m"
+        sidecar.istio.io/proxyMemory: "64Mi"
+    spec:
+      serviceAccountName: finbot-production
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101  # nginx user
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: finbot-admin
+        image: ghcr.io/finbot/finbot-admin:v4.0.0
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: API_BASE_URL
+          value: "https://api.finbot.com"
+        - name: API_INTERNAL_URL
+          value: "http://finbot-api.production.svc.cluster.local:3001"
+        - name: APP_VERSION
+          value: "v4.0.0"
+        - name: BUILD_DATE
+          value: "2024-01-01T00:00:00Z"
+        - name: ADMIN_PANEL_MODE
+          value: "true"
+        - name: SENTRY_DSN
+          valueFrom:
+            secretKeyRef:
+              name: admin-config
+              key: sentry-dsn
+              optional: true
+        - name: AUTH0_DOMAIN
+          value: "finbot.auth0.com"
+        - name: AUTH0_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: admin-config
+              key: auth0-client-id
+        - name: ADMIN_FEATURES
+          valueFrom:
+            configMapKeyRef:
+              name: finbot-admin-config
+              key: admin-features.json
+        - name: NGINX_WORKER_PROCESSES
+          value: "1"
+        - name: NGINX_WORKER_CONNECTIONS
+          value: "512"
+        - name: NGINX_KEEPALIVE_TIMEOUT
+          value: "65"
+        - name: NGINX_CLIENT_MAX_BODY_SIZE
+          value: "50m"  # Larger for admin uploads
+        - name: NGINX_GZIP_ENABLED
+          value: "on"
+        - name: NGINX_GZIP_COMP_LEVEL
+          value: "6"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+            httpHeaders:
+            - name: User-Agent
+              value: "k8s-liveness-probe"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+            httpHeaders:
+            - name: User-Agent
+              value: "k8s-readiness-probe"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+          successThreshold: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+            ephemeral-storage: 500Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+            ephemeral-storage: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE  # Allow binding to port 80
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: nginx-default-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+          readOnly: true
+        - name: admin-uploads
+          mountPath: /usr/share/nginx/html/uploads
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "nginx -s quit; sleep 10"
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 500Mi
+      - name: var-cache
+        emptyDir:
+          sizeLimit: 500Mi
+      - name: var-run
+        emptyDir:
+          sizeLimit: 100Mi
+      - name: nginx-config
+        configMap:
+          name: finbot-admin-nginx-config
+      - name: nginx-default-config
+        configMap:
+          name: finbot-admin-nginx-config
+      - name: admin-uploads
+        persistentVolumeClaim:
+          claimName: finbot-admin-uploads
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: finbot-admin
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: In
+                values: ["general-purpose"]
+      tolerations:
+      - key: node-role.kubernetes.io/spot
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      terminationGracePeriodSeconds: 30
+
+---
+# FinBot Admin Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: finbot-admin
+  namespace: production
+  labels:
+    app: finbot-admin
+    component: admin
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "80"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: finbot-admin
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600  # 1 hour session affinity for admin users
+
+---
+# FinBot Admin PVC for Uploads
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: finbot-admin-uploads
+  namespace: production
+  labels:
+    app: finbot-admin
+    component: storage
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: efs-storage
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# FinBot Admin ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finbot-admin-config
+  namespace: production
+  labels:
+    app: finbot-admin
+data:
+  admin-features.json: |
+    {
+      "userManagement": true,
+      "transactionManagement": true,
+      "accountManagement": true,
+      "systemSettings": true,
+      "auditLogs": true,
+      "analytics": true,
+      "reports": true,
+      "backups": true,
+      "monitoring": true,
+      "alerts": true,
+      "bulkOperations": true,
+      "dataExport": true,
+      "systemHealth": true,
+      "performanceMetrics": true,
+      "securitySettings": true,
+      "apiKeyManagement": true,
+      "webhookManagement": true,
+      "featureFlagManagement": true,
+      "contentManagement": false,
+      "marketingTools": false,
+      "advancedReporting": true,
+      "customDashboards": true
+    }
+  
+  admin-config.json: |
+    {
+      "app": {
+        "name": "FinBot Admin",
+        "version": "4.0.0",
+        "description": "FinBot Administration Panel",
+        "author": "FinBot Team"
+      },
+      "api": {
+        "baseUrl": "https://api.finbot.com",
+        "timeout": 60000,
+        "retries": 3
+      },
+      "auth": {
+        "domain": "finbot.auth0.com",
+        "redirectUri": "https://admin.finbot.com/callback",
+        "logoutUri": "https://admin.finbot.com/logout",
+        "scope": "openid profile email admin:read admin:write",
+        "requiredRoles": ["admin", "super-admin"]
+      },
+      "ui": {
+        "theme": "dark",
+        "language": "en",
+        "dateFormat": "YYYY-MM-DD",
+        "timeFormat": "24h",
+        "itemsPerPage": 50
+      },
+      "security": {
+        "sessionTimeout": 3600,
+        "maxLoginAttempts": 3,
+        "lockoutDuration": 900,
+        "requireMFA": true,
+        "auditAllActions": true
+      },
+      "features": {
+        "enableAuditLogs": true,
+        "enableBulkOperations": true,
+        "enableDataExport": true,
+        "enableSystemMonitoring": true,
+        "enableAdvancedSearch": true
+      }
+    }
+
+---
+# FinBot Admin Nginx Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finbot-admin-nginx-config
+  namespace: production
+  labels:
+    app: finbot-admin
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes 1;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+    
+    events {
+        worker_connections 512;
+        use epoll;
+        multi_accept on;
+    }
+    
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        # Enhanced logging for admin panel
+        log_format admin '$remote_addr - $remote_user [$time_local] "$request" '
+                         '$status $body_bytes_sent "$http_referer" '
+                         '"$http_user_agent" "$http_x_forwarded_for" '
+                         'rt=$request_time uct="$upstream_connect_time" '
+                         'uht="$upstream_header_time" urt="$upstream_response_time" '
+                         'admin_action="$http_x_admin_action"';
+        
+        access_log /var/log/nginx/access.log admin;
+        
+        # Basic settings
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size 50m;  # Larger for admin uploads
+        
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_comp_level 6;
+        gzip_types
+            text/plain
+            text/css
+            text/xml
+            text/javascript
+            application/json
+            application/javascript
+            application/xml+rss
+            application/atom+xml
+            image/svg+xml;
+        
+        # Enhanced security headers for admin panel
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.auth0.com; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src 'self' fonts.gstatic.com; img-src 'self' data:; connect-src 'self' *.finbot.com *.auth0.com; frame-src 'self' *.auth0.com;" always;
+        
+        # Rate limiting (stricter for admin)
+        limit_req_zone $binary_remote_addr zone=admin_api:10m rate=5r/s;
+        limit_req_zone $binary_remote_addr zone=admin_login:10m rate=3r/m;
+        limit_req_zone $binary_remote_addr zone=admin_upload:10m rate=1r/s;
+        
+        # Cache settings
+        open_file_cache max=1000 inactive=20s;
+        open_file_cache_valid 30s;
+        open_file_cache_min_uses 2;
+        open_file_cache_errors on;
+        
+        include /etc/nginx/conf.d/*.conf;
+    }
+  
+  default.conf: |
+    # Upstream for API
+    upstream finbot_api {
+        server finbot-api.production.svc.cluster.local:3001;
+        keepalive 16;
+    }
+    
+    # Main server block for admin panel
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        
+        # Health check endpoint
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Readiness check endpoint
+        location /ready {
+            access_log off;
+            return 200 "ready\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Metrics endpoint for Prometheus
+        location /metrics {
+            access_log off;
+            stub_status on;
+        }
+        
+        # Static assets with caching
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 7d;
+            add_header Cache-Control "public";
+            add_header X-Content-Type-Options "nosniff";
+        }
+        
+        # Admin API proxy with strict rate limiting
+        location /api/ {
+            limit_req zone=admin_api burst=10 nodelay;
+            
+            # Additional security headers for API calls
+            add_header X-Admin-Panel "true";
+            
+            proxy_pass http://finbot_api;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Admin-Request "true";
+            proxy_cache_bypass $http_upgrade;
+            
+            # Extended timeouts for admin operations
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+            
+            # Buffer settings
+            proxy_buffering on;
+            proxy_buffer_size 8k;
+            proxy_buffers 16 8k;
+        }
+        
+        # Auth endpoints with very strict rate limiting
+        location /api/auth/ {
+            limit_req zone=admin_login burst=3 nodelay;
+            
+            proxy_pass http://finbot_api;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Admin-Auth "true";
+        }
+        
+        # File upload endpoint with rate limiting
+        location /api/upload/ {
+            limit_req zone=admin_upload burst=3 nodelay;
+            
+            client_max_body_size 50m;
+            proxy_pass http://finbot_api;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            
+            # Extended timeouts for file uploads
+            proxy_connect_timeout 120s;
+            proxy_send_timeout 120s;
+            proxy_read_timeout 120s;
+        }
+        
+        # Admin uploads directory
+        location /uploads/ {
+            alias /usr/share/nginx/html/uploads/;
+            
+            # Security: prevent execution of uploaded files
+            location ~* \.(php|pl|py|jsp|asp|sh|cgi)$ {
+                deny all;
+            }
+            
+            # Cache uploaded files
+            expires 30d;
+            add_header Cache-Control "public";
+        }
+        
+        # SPA routing - serve index.html for all non-API routes
+        location / {
+            try_files $uri $uri/ /index.html;
+            
+            # No cache for HTML files
+            location ~* \.html$ {
+                expires -1;
+                add_header Cache-Control "no-cache, no-store, must-revalidate";
+                add_header Pragma "no-cache";
+            }
+        }
+        
+        # Block common attack patterns
+        location ~* \.(env|git|svn|htaccess|htpasswd)$ {
+            deny all;
+            return 404;
+        }
+        
+        # Security.txt
+        location /.well-known/security.txt {
+            return 200 "Contact: security@finbot.com\nExpires: 2025-12-31T23:59:59.000Z\nPreferred-Languages: en\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Robots.txt (block all crawlers for admin panel)
+        location /robots.txt {
+            return 200 "User-agent: *\nDisallow: /\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Error pages
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
+        
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+    }
+
+---
+# FinBot Admin Network Policy (More Restrictive)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: finbot-admin-network-policy
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: finbot-admin
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from istio-system (ingress gateway) only
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 80
+  # Allow ingress from monitoring namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  # Allow egress to API service only
+  - to:
+    - podSelector:
+        matchLabels:
+          app: finbot-api
+    ports:
+    - protocol: TCP
+      port: 3001
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow HTTPS to Auth0 only
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+
+---
+# FinBot Admin Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: finbot-admin-pdb
+  namespace: production
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: finbot-admin

@@ -1,0 +1,663 @@
+# FinBot v4 - HashiCorp Vault Cluster
+# High availability Vault cluster with auto-unseal and Kubernetes integration
+
+---
+# Vault Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vault
+  labels:
+    name: vault
+    app.kubernetes.io/name: vault
+
+---
+# Vault Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+
+---
+# Vault ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vault-auth
+  labels:
+    app.kubernetes.io/name: vault
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["serviceaccounts/token"]
+  verbs: ["create"]
+- apiGroups: ["authentication.k8s.io"]
+  resources: ["tokenreviews"]
+  verbs: ["create"]
+- apiGroups: ["authorization.k8s.io"]
+  resources: ["subjectaccessreviews"]
+  verbs: ["create"]
+
+---
+# Vault ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vault-auth
+  labels:
+    app.kubernetes.io/name: vault
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vault-auth
+subjects:
+- kind: ServiceAccount
+  name: vault
+  namespace: vault
+
+---
+# Vault Configuration Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-config
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+type: Opaque
+data:
+  # Base64 encoded Vault configuration
+  vault.hcl: |
+    c3RvcmFnZSAiY29uc3VsIiB7CiAgYWRkcmVzcyA9ICJjb25zdWw6ODUwMCIKICBwYXRoICAgID0gInZhdWx0LyIKfQoKbGlzdGVuZXIgInRjcCIgewogIGFkZHJlc3MgICAgID0gIjAuMC4wLjA6ODIwMCIKICB0bHNfY2VydF9maWxlID0gIi92YXVsdC90bHMvdmF1bHQuY3J0IgogIHRsc19rZXlfZmlsZSAgPSAiL3ZhdWx0L3Rscy92YXVsdC5rZXkiCn0KCnNlYWwgImF3c2ttcyIgewogIHJlZ2lvbiAgICAgPSAidXMtd2VzdC0yIgogIGttc19rZXlfaWQgPSAiYWxpYXMvdmF1bHQtdW5zZWFsLWtleSIKfQoKdWkgPSB0cnVlCmFwaV9hZGRyID0gImh0dHBzOi8vdmF1bHQuZmluYm90LmNvbTo4MjAwIgpjbHVzdGVyX2FkZHIgPSAiaHR0cHM6Ly92YXVsdC5maW5ib3QuY29tOjgyMDEiCmxvZ19sZXZlbCA9ICJJTkZPIgpkaXNhYmxlX21sb2NrID0gdHJ1ZQ==
+
+---
+# Vault TLS Secret (placeholder - replace with actual certificates)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-tls
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+type: kubernetes.io/tls
+data:
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # placeholder
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t  # placeholder
+  ca.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t   # placeholder
+
+---
+# Consul for Vault Storage
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: consul
+  namespace: vault
+  labels:
+    app: consul
+spec:
+  serviceName: consul
+  replicas: 3
+  selector:
+    matchLabels:
+      app: consul
+  template:
+    metadata:
+      labels:
+        app: consul
+    spec:
+      serviceAccountName: vault
+      containers:
+      - name: consul
+        image: consul:1.16.1
+        ports:
+        - name: http
+          containerPort: 8500
+        - name: rpc
+          containerPort: 8400
+        - name: serflan-tcp
+          containerPort: 8301
+          protocol: TCP
+        - name: serflan-udp
+          containerPort: 8301
+          protocol: UDP
+        - name: serfwan-tcp
+          containerPort: 8302
+          protocol: TCP
+        - name: serfwan-udp
+          containerPort: 8302
+          protocol: UDP
+        - name: server
+          containerPort: 8300
+        - name: consuldns
+          containerPort: 8600
+        env:
+        - name: CONSUL_DATACENTER
+          value: "dc1"
+        - name: CONSUL_DOMAIN
+          value: "consul"
+        - name: CONSUL_ENCRYPT
+          value: "cg8StVXbQJ0gPvMd9o7yrg=="
+        command:
+        - /bin/sh
+        - -c
+        - |
+          exec consul agent \
+            -server \
+            -bootstrap-expect=3 \
+            -retry-join=consul-0.consul.vault.svc.cluster.local \
+            -retry-join=consul-1.consul.vault.svc.cluster.local \
+            -retry-join=consul-2.consul.vault.svc.cluster.local \
+            -client=0.0.0.0 \
+            -datacenter=dc1 \
+            -data-dir=/consul/data \
+            -domain=consul \
+            -encrypt=cg8StVXbQJ0gPvMd9o7yrg== \
+            -ui \
+            -disable-host-node-id
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        volumeMounts:
+        - name: data
+          mountPath: /consul/data
+        livenessProbe:
+          httpGet:
+            path: /v1/status/leader
+            port: 8500
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /v1/status/leader
+            port: 8500
+          initialDelaySeconds: 10
+          periodSeconds: 5
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - consul
+            topologyKey: kubernetes.io/hostname
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Consul Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul
+  namespace: vault
+  labels:
+    app: consul
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8500
+    targetPort: 8500
+  - name: rpc
+    port: 8400
+    targetPort: 8400
+  - name: serflan-tcp
+    port: 8301
+    targetPort: 8301
+    protocol: TCP
+  - name: serflan-udp
+    port: 8301
+    targetPort: 8301
+    protocol: UDP
+  - name: serfwan-tcp
+    port: 8302
+    targetPort: 8302
+    protocol: TCP
+  - name: serfwan-udp
+    port: 8302
+    targetPort: 8302
+    protocol: UDP
+  - name: server
+    port: 8300
+    targetPort: 8300
+  - name: consuldns
+    port: 8600
+    targetPort: 8600
+  selector:
+    app: consul
+
+---
+# Vault StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  serviceName: vault-internal
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8200"
+        prometheus.io/path: "/v1/sys/metrics"
+    spec:
+      serviceAccountName: vault
+      containers:
+      - name: vault
+        image: vault:1.15.2
+        ports:
+        - name: http
+          containerPort: 8200
+        - name: https-internal
+          containerPort: 8201
+        - name: http-rep
+          containerPort: 8202
+        env:
+        - name: VAULT_ADDR
+          value: "https://127.0.0.1:8200"
+        - name: VAULT_API_ADDR
+          value: "https://vault.finbot.com:8200"
+        - name: VAULT_CLUSTER_ADDR
+          value: "https://$(HOSTNAME).vault-internal.vault.svc.cluster.local:8201"
+        - name: VAULT_RAFT_NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: VAULT_LOCAL_CONFIG
+          value: |
+            ui = true
+            
+            listener "tcp" {
+              address = "[::]:8200"
+              cluster_address = "[::]:8201"
+              tls_cert_file = "/vault/tls/tls.crt"
+              tls_key_file = "/vault/tls/tls.key"
+            }
+            
+            storage "consul" {
+              address = "consul:8500"
+              path = "vault/"
+            }
+            
+            seal "awskms" {
+              region = "us-west-2"
+              kms_key_id = "alias/vault-unseal-key"
+            }
+            
+            api_addr = "https://vault.finbot.com:8200"
+            cluster_addr = "https://vault.finbot.com:8201"
+            log_level = "INFO"
+            disable_mlock = true
+            
+            telemetry {
+              prometheus_retention_time = "30s"
+              disable_hostname = true
+            }
+        command:
+        - /bin/sh
+        - -c
+        - |
+          cp /vault/config/vault.hcl /tmp/vault.hcl
+          exec vault server -config=/tmp/vault.hcl
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            add:
+            - IPC_LOCK
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 100
+          runAsGroup: 1000
+        volumeMounts:
+        - name: config
+          mountPath: /vault/config
+        - name: tls
+          mountPath: /vault/tls
+        - name: data
+          mountPath: /vault/data
+        - name: tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /v1/sys/health?standbyok=true
+            port: 8200
+            scheme: HTTPS
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+            port: 8200
+            scheme: HTTPS
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: config
+        secret:
+          secretName: vault-config
+      - name: tls
+        secret:
+          secretName: vault-tls
+      - name: tmp
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                - vault
+            topologyKey: kubernetes.io/hostname
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Vault Internal Service (for cluster communication)
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault-internal
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: http
+    port: 8200
+    targetPort: 8200
+  - name: https-internal
+    port: 8201
+    targetPort: 8201
+  selector:
+    app.kubernetes.io/name: vault
+
+---
+# Vault External Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8200
+    targetPort: 8200
+  - name: https-internal
+    port: 8201
+    targetPort: 8201
+  selector:
+    app.kubernetes.io/name: vault
+
+---
+# Vault Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vault
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      location /v1/sys/health {
+        access_log off;
+      }
+spec:
+  tls:
+  - hosts:
+    - vault.finbot.com
+    secretName: vault-tls-ingress
+  rules:
+  - host: vault.finbot.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: vault
+            port:
+              number: 8200
+
+---
+# Vault Initialization Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vault-init
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+    component: init
+spec:
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vault
+        component: init
+    spec:
+      serviceAccountName: vault
+      restartPolicy: OnFailure
+      containers:
+      - name: vault-init
+        image: vault:1.15.2
+        env:
+        - name: VAULT_ADDR
+          value: "https://vault.vault.svc.cluster.local:8200"
+        - name: VAULT_SKIP_VERIFY
+          value: "true"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          
+          echo "Waiting for Vault to be ready..."
+          until vault status 2>/dev/null; do
+            echo "Waiting for Vault..."
+            sleep 5
+          done
+          
+          # Check if Vault is already initialized
+          if vault status | grep -q "Initialized.*true"; then
+            echo "Vault is already initialized"
+            exit 0
+          fi
+          
+          echo "Initializing Vault..."
+          vault operator init \
+            -key-shares=5 \
+            -key-threshold=3 \
+            -format=json > /tmp/vault-init.json
+          
+          # Store init keys in Kubernetes secret
+          kubectl create secret generic vault-init-keys \
+            --from-file=/tmp/vault-init.json \
+            --namespace=vault || true
+          
+          echo "Vault initialization completed"
+          
+          # Auto-unseal should handle unsealing, but let's verify
+          sleep 10
+          if vault status | grep -q "Sealed.*true"; then
+            echo "Warning: Vault is still sealed after initialization"
+          else
+            echo "Vault is unsealed and ready"
+          fi
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      activeDeadlineSeconds: 300
+
+---
+# Vault Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: vault-pdb
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+
+---
+# Vault Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vault-network-policy
+  namespace: vault
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          name: production
+    - namespaceSelector:
+        matchLabels:
+          name: staging
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+    - podSelector:
+        matchLabels:
+          app: consul
+    ports:
+    - protocol: TCP
+      port: 8200
+    - protocol: TCP
+      port: 8201
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: consul
+    ports:
+    - protocol: TCP
+      port: 8500
+  - to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: vault
+    ports:
+    - protocol: TCP
+      port: 8200
+    - protocol: TCP
+      port: 8201
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+
+---
+# Vault Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vault
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: vault
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /v1/sys/metrics
+    params:
+      format: ['prometheus']
+    scheme: https
+    tlsConfig:
+      insecureSkipVerify: true
+  namespaceSelector:
+    matchNames:
+    - vault

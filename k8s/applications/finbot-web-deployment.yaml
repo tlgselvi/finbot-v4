@@ -1,0 +1,631 @@
+# FinBot v4 - Web Application Deployment
+# Production-ready web frontend deployment with optimized configurations
+
+---
+# FinBot Web Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finbot-web
+  namespace: production
+  labels:
+    app: finbot-web
+    version: v4.0.0
+    component: frontend
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: finbot-web
+  template:
+    metadata:
+      labels:
+        app: finbot-web
+        version: v4.0.0
+        component: frontend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+        sidecar.istio.io/inject: "true"
+        sidecar.istio.io/proxyCPU: "50m"
+        sidecar.istio.io/proxyMemory: "64Mi"
+    spec:
+      serviceAccountName: finbot-production
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101  # nginx user
+        fsGroup: 101
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: finbot-web
+        image: ghcr.io/finbot/finbot-web:v4.0.0
+        ports:
+        - containerPort: 80
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: API_BASE_URL
+          value: "https://api.finbot.com"
+        - name: API_INTERNAL_URL
+          value: "http://finbot-api.production.svc.cluster.local:3001"
+        - name: APP_VERSION
+          value: "v4.0.0"
+        - name: BUILD_DATE
+          value: "2024-01-01T00:00:00Z"
+        - name: SENTRY_DSN
+          valueFrom:
+            secretKeyRef:
+              name: web-config
+              key: sentry-dsn
+              optional: true
+        - name: GOOGLE_ANALYTICS_ID
+          valueFrom:
+            secretKeyRef:
+              name: web-config
+              key: google-analytics-id
+              optional: true
+        - name: HOTJAR_ID
+          valueFrom:
+            secretKeyRef:
+              name: web-config
+              key: hotjar-id
+              optional: true
+        - name: INTERCOM_APP_ID
+          valueFrom:
+            secretKeyRef:
+              name: web-config
+              key: intercom-app-id
+              optional: true
+        - name: STRIPE_PUBLISHABLE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: web-config
+              key: stripe-publishable-key
+        - name: AUTH0_DOMAIN
+          value: "finbot.auth0.com"
+        - name: AUTH0_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: web-config
+              key: auth0-client-id
+        - name: FEATURE_FLAGS
+          valueFrom:
+            configMapKeyRef:
+              name: finbot-web-config
+              key: feature-flags.json
+        - name: NGINX_WORKER_PROCESSES
+          value: "auto"
+        - name: NGINX_WORKER_CONNECTIONS
+          value: "1024"
+        - name: NGINX_KEEPALIVE_TIMEOUT
+          value: "65"
+        - name: NGINX_CLIENT_MAX_BODY_SIZE
+          value: "10m"
+        - name: NGINX_GZIP_ENABLED
+          value: "on"
+        - name: NGINX_GZIP_COMP_LEVEL
+          value: "6"
+        - name: NGINX_CACHE_ENABLED
+          value: "on"
+        - name: NGINX_CACHE_MAX_SIZE
+          value: "100m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+            httpHeaders:
+            - name: User-Agent
+              value: "k8s-liveness-probe"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+            httpHeaders:
+            - name: User-Agent
+              value: "k8s-readiness-probe"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+          successThreshold: 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+            ephemeral-storage: 500Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+            ephemeral-storage: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_BIND_SERVICE  # Allow binding to port 80
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+        - name: nginx-default-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: default.conf
+          readOnly: true
+        - name: static-assets
+          mountPath: /usr/share/nginx/html/static
+          readOnly: true
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - "nginx -s quit; sleep 10"
+      initContainers:
+      - name: asset-optimizer
+        image: ghcr.io/finbot/finbot-web:v4.0.0
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Optimizing static assets..."
+          # Copy optimized assets to shared volume
+          cp -r /usr/share/nginx/html/static/* /shared/static/
+          # Generate asset manifest
+          find /shared/static -type f -name "*.js" -o -name "*.css" -o -name "*.png" -o -name "*.jpg" -o -name "*.svg" | \
+            xargs -I {} sh -c 'echo "$(basename {}): $(stat -c%s {})" >> /shared/asset-manifest.txt'
+          echo "Asset optimization completed"
+        volumeMounts:
+        - name: static-assets
+          mountPath: /shared/static
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 500Mi
+      - name: var-cache
+        emptyDir:
+          sizeLimit: 500Mi
+      - name: var-run
+        emptyDir:
+          sizeLimit: 100Mi
+      - name: static-assets
+        emptyDir:
+          sizeLimit: 2Gi
+      - name: nginx-config
+        configMap:
+          name: finbot-web-nginx-config
+      - name: nginx-default-config
+        configMap:
+          name: finbot-web-nginx-config
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: finbot-web
+              topologyKey: kubernetes.io/hostname
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: node-type
+                operator: In
+                values: ["general-purpose"]
+      tolerations:
+      - key: node-role.kubernetes.io/spot
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: finbot-web
+      terminationGracePeriodSeconds: 30
+
+---
+# FinBot Web Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: finbot-web
+  namespace: production
+  labels:
+    app: finbot-web
+    component: frontend
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "80"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: finbot-web
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+  sessionAffinity: None
+
+---
+# FinBot Web ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finbot-web-config
+  namespace: production
+  labels:
+    app: finbot-web
+data:
+  feature-flags.json: |
+    {
+      "darkMode": true,
+      "advancedAnalytics": true,
+      "budgetingV2": true,
+      "investmentTracking": true,
+      "goalSetting": true,
+      "billReminders": true,
+      "categoryInsights": true,
+      "exportData": true,
+      "multiCurrency": true,
+      "recurringTransactions": true,
+      "savingsGoals": true,
+      "debtTracking": true,
+      "netWorthTracking": true,
+      "cashFlowProjection": true,
+      "taxReporting": false,
+      "cryptoTracking": false,
+      "realEstateTracking": false,
+      "businessAccounting": false
+    }
+  
+  app-config.json: |
+    {
+      "app": {
+        "name": "FinBot",
+        "version": "4.0.0",
+        "description": "Personal Finance Management Platform",
+        "author": "FinBot Team",
+        "homepage": "https://app.finbot.com"
+      },
+      "api": {
+        "baseUrl": "https://api.finbot.com",
+        "timeout": 30000,
+        "retries": 3
+      },
+      "auth": {
+        "domain": "finbot.auth0.com",
+        "redirectUri": "https://app.finbot.com/callback",
+        "logoutUri": "https://app.finbot.com/logout",
+        "scope": "openid profile email"
+      },
+      "ui": {
+        "theme": "light",
+        "language": "en",
+        "currency": "USD",
+        "dateFormat": "MM/DD/YYYY",
+        "timeFormat": "12h"
+      },
+      "features": {
+        "enableNotifications": true,
+        "enableAnalytics": true,
+        "enableChatSupport": true,
+        "enableFeedback": true
+      }
+    }
+
+---
+# FinBot Web Nginx Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finbot-web-nginx-config
+  namespace: production
+  labels:
+    app: finbot-web
+data:
+  nginx.conf: |
+    user nginx;
+    worker_processes auto;
+    error_log /var/log/nginx/error.log warn;
+    pid /var/run/nginx.pid;
+    
+    events {
+        worker_connections 1024;
+        use epoll;
+        multi_accept on;
+    }
+    
+    http {
+        include /etc/nginx/mime.types;
+        default_type application/octet-stream;
+        
+        # Logging format
+        log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                        '$status $body_bytes_sent "$http_referer" '
+                        '"$http_user_agent" "$http_x_forwarded_for" '
+                        'rt=$request_time uct="$upstream_connect_time" '
+                        'uht="$upstream_header_time" urt="$upstream_response_time"';
+        
+        access_log /var/log/nginx/access.log main;
+        
+        # Basic settings
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        keepalive_timeout 65;
+        types_hash_max_size 2048;
+        client_max_body_size 10m;
+        
+        # Gzip compression
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_comp_level 6;
+        gzip_types
+            text/plain
+            text/css
+            text/xml
+            text/javascript
+            application/json
+            application/javascript
+            application/xml+rss
+            application/atom+xml
+            image/svg+xml;
+        
+        # Security headers
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' *.auth0.com *.google-analytics.com *.googletagmanager.com *.hotjar.com *.intercom.io; style-src 'self' 'unsafe-inline' fonts.googleapis.com; font-src 'self' fonts.gstatic.com; img-src 'self' data: *.gravatar.com *.intercom.io; connect-src 'self' *.finbot.com *.auth0.com *.google-analytics.com *.hotjar.com *.intercom.io wss:; frame-src 'self' *.auth0.com *.intercom.io;" always;
+        
+        # Rate limiting
+        limit_req_zone $binary_remote_addr zone=api:10m rate=10r/s;
+        limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+        
+        # Cache settings
+        open_file_cache max=1000 inactive=20s;
+        open_file_cache_valid 30s;
+        open_file_cache_min_uses 2;
+        open_file_cache_errors on;
+        
+        include /etc/nginx/conf.d/*.conf;
+    }
+  
+  default.conf: |
+    # Upstream for API
+    upstream finbot_api {
+        server finbot-api.production.svc.cluster.local:3001;
+        keepalive 32;
+    }
+    
+    # Main server block
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        
+        # Health check endpoint
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Readiness check endpoint
+        location /ready {
+            access_log off;
+            return 200 "ready\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Metrics endpoint for Prometheus
+        location /metrics {
+            access_log off;
+            stub_status on;
+        }
+        
+        # Static assets with long-term caching
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            add_header X-Content-Type-Options "nosniff";
+            
+            # Enable compression for text-based assets
+            location ~* \.(js|css|svg)$ {
+                gzip_static on;
+            }
+        }
+        
+        # API proxy with rate limiting
+        location /api/ {
+            limit_req zone=api burst=20 nodelay;
+            
+            proxy_pass http://finbot_api;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_cache_bypass $http_upgrade;
+            
+            # Timeouts
+            proxy_connect_timeout 30s;
+            proxy_send_timeout 30s;
+            proxy_read_timeout 30s;
+            
+            # Buffer settings
+            proxy_buffering on;
+            proxy_buffer_size 4k;
+            proxy_buffers 8 4k;
+        }
+        
+        # Auth endpoints with stricter rate limiting
+        location /api/auth/ {
+            limit_req zone=login burst=5 nodelay;
+            
+            proxy_pass http://finbot_api;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        
+        # SPA routing - serve index.html for all non-API routes
+        location / {
+            try_files $uri $uri/ /index.html;
+            
+            # Cache control for HTML files
+            location ~* \.html$ {
+                expires -1;
+                add_header Cache-Control "no-cache, no-store, must-revalidate";
+                add_header Pragma "no-cache";
+            }
+        }
+        
+        # Security.txt
+        location /.well-known/security.txt {
+            return 200 "Contact: security@finbot.com\nExpires: 2025-12-31T23:59:59.000Z\nPreferred-Languages: en\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Robots.txt
+        location /robots.txt {
+            return 200 "User-agent: *\nDisallow: /api/\nDisallow: /admin/\nSitemap: https://app.finbot.com/sitemap.xml\n";
+            add_header Content-Type text/plain;
+        }
+        
+        # Error pages
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
+        
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+    }
+
+---
+# FinBot Web Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: finbot-web-network-policy
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: finbot-web
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from istio-system (ingress gateway)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 80
+  # Allow ingress from monitoring namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  # Allow egress to API service
+  - to:
+    - podSelector:
+        matchLabels:
+          app: finbot-api
+    ports:
+    - protocol: TCP
+      port: 3001
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow HTTPS to external services (CDNs, analytics, etc.)
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+
+---
+# FinBot Web Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: finbot-web-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: finbot-web

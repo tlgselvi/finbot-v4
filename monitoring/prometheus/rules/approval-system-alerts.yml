@@ -1,0 +1,234 @@
+# FinBot v4 - Approval System Alert Rules
+# Prometheus alerting rules for monitoring approval system health
+
+groups:
+  - name: approval-system-alerts
+    rules:
+      # High-level service availability
+      - alert: ApprovalAPIDown
+        expr: up{job="approval-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: approval-api
+        annotations:
+          summary: "Approval API instance is down"
+          description: "Approval API instance {{ $labels.instance }} has been down for more than 1 minute"
+
+      - alert: DatabaseDown
+        expr: up{job="postgres"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "Database is down"
+          description: "PostgreSQL database {{ $labels.instance }} is not responding"
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is down"
+          description: "Redis instance {{ $labels.instance }} is not responding"
+
+      # Performance alerts
+      - alert: HighResponseTime
+        expr: http_request_duration_seconds{quantile="0.95"} > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: approval-api
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s for {{ $labels.instance }}"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          service: approval-api
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.instance }}"
+
+      # Database performance
+      - alert: DatabaseConnectionsHigh
+        expr: postgres_connections_active / postgres_connections_max > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Database connections are high"
+          description: "Database connections are at {{ $value | humanizePercentage }} of maximum"
+
+      - alert: DatabaseSlowQueries
+        expr: postgres_slow_queries_total > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "High number of slow database queries"
+          description: "{{ $value }} slow queries detected in the last 5 minutes"
+
+      # Memory and CPU alerts
+      - alert: HighMemoryUsage
+        expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}"
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: system
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}% on {{ $labels.instance }}"
+
+      # Business logic alerts
+      - alert: HighRiskTransactionsPending
+        expr: approval_workflows_pending{risk_level="critical"} > 5
+        for: 1m
+        labels:
+          severity: warning
+          service: approval-system
+        annotations:
+          summary: "High number of critical risk transactions pending"
+          description: "{{ $value }} critical risk transactions are pending approval"
+
+      - alert: ApprovalSLABreach
+        expr: approval_workflows_sla_breached_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: approval-system
+        annotations:
+          summary: "Approval SLA breached"
+          description: "{{ $value }} workflows have breached their SLA"
+
+      - alert: FraudDetectionHigh
+        expr: rate(fraud_detection_alerts_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          service: fraud-detection
+        annotations:
+          summary: "High fraud detection rate"
+          description: "Fraud detection rate is {{ $value }} alerts per second"
+
+      - alert: ApprovalBacklogHigh
+        expr: approval_workflows_pending_total > 100
+        for: 10m
+        labels:
+          severity: warning
+          service: approval-system
+        annotations:
+          summary: "High approval backlog"
+          description: "{{ $value }} workflows are pending approval"
+
+      # Security alerts
+      - alert: SecurityViolationDetected
+        expr: rate(security_violations_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: security
+        annotations:
+          summary: "Security violation detected"
+          description: "{{ $value }} security violations detected in the last 5 minutes"
+
+      - alert: RateLimitExceeded
+        expr: rate(rate_limit_exceeded_total[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "Rate limit frequently exceeded"
+          description: "Rate limit exceeded {{ $value }} times per second"
+
+      - alert: UnauthorizedAccessAttempts
+        expr: rate(unauthorized_access_attempts_total[5m]) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "High number of unauthorized access attempts"
+          description: "{{ $value }} unauthorized access attempts per second"
+
+      # Cache performance
+      - alert: LowCacheHitRate
+        expr: cache_hit_rate < 0.7
+        for: 10m
+        labels:
+          severity: warning
+          service: performance
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}"
+
+      - alert: CacheMemoryHigh
+        expr: cache_memory_usage_bytes / cache_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: performance
+        annotations:
+          summary: "Cache memory usage high"
+          description: "Cache memory usage is {{ $value | humanizePercentage }}"
+
+      # Notification system alerts
+      - alert: NotificationDeliveryFailures
+        expr: rate(notification_delivery_failures_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: notifications
+        annotations:
+          summary: "High notification delivery failure rate"
+          description: "{{ $value }} notification delivery failures per second"
+
+      - alert: NotificationQueueBacklog
+        expr: notification_queue_size > 1000
+        for: 5m
+        labels:
+          severity: warning
+          service: notifications
+        annotations:
+          summary: "High notification queue backlog"
+          description: "{{ $value }} notifications are queued for delivery"
+
+      # Audit system alerts
+      - alert: AuditLogFailures
+        expr: rate(audit_log_failures_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: audit
+        annotations:
+          summary: "Audit log failures detected"
+          description: "{{ $value }} audit log failures per second"
+
+      - alert: AuditStorageSpaceLow
+        expr: audit_storage_free_bytes / audit_storage_total_bytes < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: audit
+        annotations:
+          summary: "Audit storage space low"
+          description: "Only {{ $value | humanizePercentage }} of audit storage space remaining"

@@ -1,0 +1,800 @@
+# FinBot v4 - Blue-Green Deployment Manifests
+# Kubernetes resources for zero-downtime blue-green deployments
+
+---
+# FinBot API Blue Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finbot-api-blue
+  namespace: production
+  labels:
+    app: finbot-api
+    color: blue
+    version: stable
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: finbot-api
+      color: blue
+  template:
+    metadata:
+      labels:
+        app: finbot-api
+        color: blue
+        version: stable
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: finbot-production
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: finbot-api
+        image: ghcr.io/finbot/finbot-api:stable
+        ports:
+        - containerPort: 3001
+          name: http
+        - containerPort: 8080
+          name: metrics
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: COLOR
+          value: "blue"
+        - name: VERSION
+          value: "stable"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: connection-string
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: connection-string
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: jwt-secret
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: finbot-api
+            topologyKey: kubernetes.io/hostname
+      tolerations:
+      - key: node-role.kubernetes.io/spot
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
+
+---
+# FinBot API Green Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finbot-api-green
+  namespace: production
+  labels:
+    app: finbot-api
+    color: green
+    version: canary
+spec:
+  replicas: 0  # Initially scaled to 0
+  selector:
+    matchLabels:
+      app: finbot-api
+      color: green
+  template:
+    metadata:
+      labels:
+        app: finbot-api
+        color: green
+        version: canary
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3001"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: finbot-production
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: finbot-api
+        image: ghcr.io/finbot/finbot-api:canary
+        ports:
+        - containerPort: 3001
+          name: http
+        - containerPort: 8080
+          name: metrics
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: COLOR
+          value: "green"
+        - name: VERSION
+          value: "canary"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: connection-string
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: connection-string
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: api-keys
+              key: jwt-secret
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 30
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: logs
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: finbot-api
+            topologyKey: kubernetes.io/hostname
+
+---
+# FinBot API Service (Traffic Router)
+apiVersion: v1
+kind: Service
+metadata:
+  name: finbot-api
+  namespace: production
+  labels:
+    app: finbot-api
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  selector:
+    app: finbot-api
+    color: blue  # Initially points to blue
+  ports:
+  - name: http
+    port: 3001
+    targetPort: 3001
+    protocol: TCP
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  type: ClusterIP
+
+---
+# FinBot Web Blue Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finbot-web-blue
+  namespace: production
+  labels:
+    app: finbot-web
+    color: blue
+    version: stable
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: finbot-web
+      color: blue
+  template:
+    metadata:
+      labels:
+        app: finbot-web
+        color: blue
+        version: stable
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: finbot-production
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+      containers:
+      - name: finbot-web
+        image: ghcr.io/finbot/finbot-web:stable
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: COLOR
+          value: "blue"
+        - name: API_URL
+          value: "https://api.finbot.com"
+        - name: VERSION
+          value: "stable"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /var/cache/nginx
+        - name: run
+          mountPath: /var/run
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: finbot-web
+              topologyKey: kubernetes.io/hostname
+
+---
+# FinBot Web Green Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: finbot-web-green
+  namespace: production
+  labels:
+    app: finbot-web
+    color: green
+    version: canary
+spec:
+  replicas: 0  # Initially scaled to 0
+  selector:
+    matchLabels:
+      app: finbot-web
+      color: green
+  template:
+    metadata:
+      labels:
+        app: finbot-web
+        color: green
+        version: canary
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: finbot-production
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        fsGroup: 101
+      containers:
+      - name: finbot-web
+        image: ghcr.io/finbot/finbot-web:canary
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: COLOR
+          value: "green"
+        - name: API_URL
+          value: "https://api.finbot.com"
+        - name: VERSION
+          value: "canary"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 101
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /var/cache/nginx
+        - name: run
+          mountPath: /var/run
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app: finbot-web
+              topologyKey: kubernetes.io/hostname
+
+---
+# FinBot Web Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: finbot-web
+  namespace: production
+  labels:
+    app: finbot-web
+spec:
+  selector:
+    app: finbot-web
+    color: blue  # Initially points to blue
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  type: ClusterIP
+
+---
+# Blue-Green Deployment Controller
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blue-green-controller
+  namespace: production
+  labels:
+    app: blue-green-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blue-green-controller
+  template:
+    metadata:
+      labels:
+        app: blue-green-controller
+    spec:
+      serviceAccountName: blue-green-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: controller
+        image: finbot/blue-green-controller:v1.0.0
+        env:
+        - name: NAMESPACE
+          value: "production"
+        - name: SERVICES
+          value: "finbot-api,finbot-web,finbot-admin"
+        - name: HEALTH_CHECK_TIMEOUT
+          value: "300"
+        - name: ROLLBACK_ON_FAILURE
+          value: "true"
+        ports:
+        - containerPort: 8080
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+
+---
+# Blue-Green Controller Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: blue-green-controller
+  namespace: production
+
+---
+# Blue-Green Controller RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: production
+  name: blue-green-controller
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: blue-green-controller
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: blue-green-controller
+  namespace: production
+roleRef:
+  kind: Role
+  name: blue-green-controller
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Blue-Green Controller Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: blue-green-controller
+  namespace: production
+  labels:
+    app: blue-green-controller
+spec:
+  selector:
+    app: blue-green-controller
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+---
+# Horizontal Pod Autoscaler for API Blue
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: finbot-api-blue-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-api-blue
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+
+---
+# Horizontal Pod Autoscaler for API Green
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: finbot-api-green-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-api-green
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+
+---
+# Pod Disruption Budget for API Blue
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: finbot-api-blue-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: finbot-api
+      color: blue
+
+---
+# Pod Disruption Budget for API Green
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: finbot-api-green-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: finbot-api
+      color: green
+
+---
+# Network Policy for Blue-Green Deployments
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: blue-green-network-policy
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: finbot-api
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from istio-system
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 3001
+  # Allow ingress from monitoring
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080
+  # Allow ingress from blue-green controller
+  - from:
+    - podSelector:
+        matchLabels:
+          app: blue-green-controller
+    ports:
+    - protocol: TCP
+      port: 3001
+  egress:
+  # Allow egress to database
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: database
+    ports:
+    - protocol: TCP
+      port: 5432
+  # Allow egress to cache
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: cache
+    ports:
+    - protocol: TCP
+      port: 6379
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53

@@ -1,0 +1,218 @@
+# FinBot v4 - Stress Testing Configuration
+# High-load stress testing to find system limits
+
+config:
+  target: 'http://localhost:3001'
+  phases:
+    # Gradual ramp-up to find breaking point
+    - duration: 60
+      arrivalRate: 10
+      name: "Initial load"
+    
+    - duration: 120
+      arrivalRate: 10
+      rampTo: 100
+      name: "Ramp to moderate load"
+    
+    - duration: 180
+      arrivalRate: 100
+      rampTo: 300
+      name: "Ramp to high load"
+    
+    - duration: 240
+      arrivalRate: 300
+      rampTo: 500
+      name: "Stress test - find limits"
+    
+    - duration: 120
+      arrivalRate: 500
+      rampTo: 1000
+      name: "Maximum stress"
+    
+    - duration: 60
+      arrivalRate: 1000
+      rampTo: 100
+      name: "Recovery test"
+
+  http:
+    timeout: 60
+    pool: 100
+    maxSockets: 100
+
+  # Stress test variables
+  variables:
+    heavyPayloads:
+      - size: "large"
+        multiplier: 10
+      - size: "xlarge"
+        multiplier: 50
+      - size: "xxlarge"
+        multiplier: 100
+
+  plugins:
+    metrics-by-endpoint: {}
+    
+    # Memory and CPU monitoring
+    resource-monitor:
+      interval: 5000
+    
+    # Custom metrics
+    custom-metrics:
+      - name: "memory_usage"
+        type: "gauge"
+      - name: "cpu_usage"
+        type: "gauge"
+
+scenarios:
+  # Heavy dashboard queries
+  - name: "Heavy Dashboard Load"
+    weight: 40
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "stress@finbot.com"
+            password: "stress123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      # Multiple concurrent dashboard requests
+      - parallel:
+          - get:
+              url: "/api/approval-workflows/dashboard/summary"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+          
+          - get:
+              url: "/api/approval-workflows"
+              qs:
+                page: 1
+                limit: 100
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+          
+          - get:
+              url: "/api/approval-workflows/pending/me"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+          
+          - get:
+              url: "/api/approval-rules"
+              headers:
+                Authorization: "Bearer {{ authToken }}"
+
+  # Bulk workflow creation
+  - name: "Bulk Workflow Creation"
+    weight: 30
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "stress@finbot.com"
+            password: "stress123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      # Create multiple workflows rapidly
+      - loop:
+          count: 10
+          over:
+            - post:
+                url: "/api/approval-workflows"
+                headers:
+                  Authorization: "Bearer {{ authToken }}"
+                  Content-Type: "application/json"
+                json:
+                  transaction:
+                    id: "{{ $randomUuid }}"
+                    type: "transfer"
+                    amount: "{{ $randomInt(10000, 500000) }}"
+                    currency: "TRY"
+                    userId: "stress-user-{{ $randomInt(1, 100) }}"
+                  requesterId: "stress-requester-{{ $randomInt(1, 50) }}"
+
+  # Database intensive operations
+  - name: "Database Stress"
+    weight: 20
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "stress@finbot.com"
+            password: "stress123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      # Complex search queries
+      - get:
+          url: "/api/approval-workflows/search"
+          qs:
+            status: "pending,approved,rejected"
+            minAmount: 1000
+            maxAmount: 1000000
+            startDate: "2024-01-01"
+            endDate: "2024-12-31"
+            page: "{{ $randomInt(1, 100) }}"
+            limit: 100
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+
+  # Memory intensive operations
+  - name: "Memory Stress"
+    weight: 10
+    flow:
+      - post:
+          url: "/api/auth/login"
+          json:
+            email: "stress@finbot.com"
+            password: "stress123"
+          capture:
+            - json: "$.token"
+              as: "authToken"
+      
+      # Request large datasets
+      - get:
+          url: "/api/approval-workflows"
+          qs:
+            limit: 1000
+            includeHistory: true
+            includeRiskAssessment: true
+            includeAuditTrail: true
+          headers:
+            Authorization: "Bearer {{ authToken }}"
+
+# Stress test expectations (more lenient than load test)
+expect:
+  - statusCode: [200, 201, 400, 401, 403, 404, 429, 500, 502, 503]
+  - responseTime: 10000  # 10 seconds max under stress
+  - successRate: 80     # 80% success rate minimum under stress
+
+# Custom metrics and monitoring
+metrics:
+  - name: "response_time_p99"
+    type: "histogram"
+    buckets: [100, 500, 1000, 2000, 5000, 10000]
+  
+  - name: "memory_usage_mb"
+    type: "gauge"
+  
+  - name: "active_connections"
+    type: "gauge"
+  
+  - name: "database_connections"
+    type: "gauge"
+
+# Failure conditions (when to stop the test)
+conditions:
+  - expression: "response.statusCode >= 500"
+    threshold: 50
+    action: "stop"
+    message: "Too many server errors"
+  
+  - expression: "response.time > 30000"
+    threshold: 10
+    action: "stop"
+    message: "Response times too high"

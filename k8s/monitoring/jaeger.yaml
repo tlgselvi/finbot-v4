@@ -1,0 +1,754 @@
+# FinBot v4 - Jaeger Distributed Tracing
+# Production-ready Jaeger deployment with Elasticsearch backend
+
+---
+# Jaeger Operator Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger-operator
+  namespace: monitoring
+  labels:
+    app: jaeger-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger-operator
+  template:
+    metadata:
+      labels:
+        app: jaeger-operator
+    spec:
+      serviceAccountName: jaeger-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: jaeger-operator
+        image: jaegertracing/jaeger-operator:1.50.0
+        args:
+        - start
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
+        - --leader-elect
+        env:
+        - name: WATCH_NAMESPACE
+          value: "monitoring"
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: OPERATOR_NAME
+          value: "jaeger-operator"
+        ports:
+        - containerPort: 8080
+          name: metrics
+        - containerPort: 8081
+          name: health
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+
+---
+# Jaeger Operator Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jaeger-operator
+  namespace: monitoring
+
+---
+# Jaeger Operator RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jaeger-operator
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "persistentvolumeclaims", "events", "configmaps", "secrets", "serviceaccounts"]
+  verbs: ["*"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+  verbs: ["*"]
+- apiGroups: ["monitoring.coreos.com"]
+  resources: ["servicemonitors"]
+  verbs: ["get", "create", "delete"]
+- apiGroups: ["io.jaegertracing"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: ["extensions"]
+  resources: ["ingresses"]
+  verbs: ["*"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["*"]
+- apiGroups: ["route.openshift.io"]
+  resources: ["routes"]
+  verbs: ["*"]
+- apiGroups: ["logging.coreos.com"]
+  resources: ["elasticsearches"]
+  verbs: ["*"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["*"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jaeger-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jaeger-operator
+subjects:
+- kind: ServiceAccount
+  name: jaeger-operator
+  namespace: monitoring
+
+---
+# Elasticsearch for Jaeger Storage
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: monitoring
+  labels:
+    app: elasticsearch
+spec:
+  serviceName: elasticsearch
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      serviceAccountName: elasticsearch
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      initContainers:
+      - name: increase-vm-max-map
+        image: busybox:1.36
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+        env:
+        - name: cluster.name
+          value: "jaeger"
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: discovery.seed_hosts
+          value: "elasticsearch-0.elasticsearch.monitoring.svc.cluster.local,elasticsearch-1.elasticsearch.monitoring.svc.cluster.local,elasticsearch-2.elasticsearch.monitoring.svc.cluster.local"
+        - name: cluster.initial_master_nodes
+          value: "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+        - name: ES_JAVA_OPTS
+          value: "-Xms2g -Xmx2g"
+        - name: xpack.security.enabled
+          value: "true"
+        - name: xpack.security.transport.ssl.enabled
+          value: "true"
+        - name: xpack.security.transport.ssl.verification_mode
+          value: "certificate"
+        - name: xpack.security.transport.ssl.keystore.path
+          value: "/usr/share/elasticsearch/config/certs/elastic-certificates.p12"
+        - name: xpack.security.transport.ssl.truststore.path
+          value: "/usr/share/elasticsearch/config/certs/elastic-certificates.p12"
+        - name: xpack.security.http.ssl.enabled
+          value: "true"
+        - name: xpack.security.http.ssl.keystore.path
+          value: "/usr/share/elasticsearch/config/certs/elastic-certificates.p12"
+        - name: ELASTIC_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: elasticsearch-credentials
+              key: password
+        ports:
+        - containerPort: 9200
+          name: http
+        - containerPort: 9300
+          name: transport
+        volumeMounts:
+        - name: elasticsearch-data
+          mountPath: /usr/share/elasticsearch/data
+        - name: elasticsearch-certs
+          mountPath: /usr/share/elasticsearch/config/certs
+        resources:
+          requests:
+            cpu: 1000m
+            memory: 4Gi
+          limits:
+            cpu: 2000m
+            memory: 8Gi
+        livenessProbe:
+          httpGet:
+            path: /_cluster/health
+            port: 9200
+            scheme: HTTPS
+          initialDelaySeconds: 90
+          periodSeconds: 30
+          timeoutSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health?wait_for_status=yellow&timeout=5s
+            port: 9200
+            scheme: HTTPS
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: elasticsearch-certs
+        secret:
+          secretName: elasticsearch-certs
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: elasticsearch
+            topologyKey: kubernetes.io/hostname
+  volumeClaimTemplates:
+  - metadata:
+      name: elasticsearch-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 100Gi
+
+---
+# Elasticsearch Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elasticsearch
+  namespace: monitoring
+
+---
+# Elasticsearch Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: monitoring
+  labels:
+    app: elasticsearch
+spec:
+  selector:
+    app: elasticsearch
+  ports:
+  - name: http
+    port: 9200
+    targetPort: 9200
+  - name: transport
+    port: 9300
+    targetPort: 9300
+  clusterIP: None
+
+---
+# Elasticsearch Credentials External Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: elasticsearch-credentials
+  namespace: monitoring
+spec:
+  refreshInterval: 3600s
+  secretStoreRef:
+    name: vault-cluster-backend
+    kind: ClusterSecretStore
+  target:
+    name: elasticsearch-credentials
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        password: "{{ .password }}"
+        username: "elastic"
+  data:
+  - secretKey: password
+    remoteRef:
+      key: finbot/monitoring/elasticsearch
+      property: password
+
+---
+# Elasticsearch Certificates (placeholder)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: elasticsearch-certs
+  namespace: monitoring
+type: Opaque
+data:
+  elastic-certificates.p12: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K # Placeholder cert
+
+---
+# Jaeger Instance
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: finbot-jaeger
+  namespace: monitoring
+spec:
+  strategy: production
+  storage:
+    type: elasticsearch
+    elasticsearch:
+      nodeCount: 3
+      redundancyPolicy: SingleRedundancy
+      resources:
+        requests:
+          cpu: 1000m
+          memory: 4Gi
+        limits:
+          cpu: 2000m
+          memory: 8Gi
+      storage:
+        storageClassName: fast-ssd
+        size: 100Gi
+    esIndexCleaner:
+      enabled: true
+      numberOfDays: 7
+      schedule: "55 23 * * *"
+    esRollover:
+      conditions: "{\"max_age\": \"1d\", \"max_size\": \"5gb\"}"
+      schedule: "0 0 * * *"
+  collector:
+    replicas: 3
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+    config: |
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:14250
+            http:
+              endpoint: 0.0.0.0:14268
+        jaeger:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:14250
+            thrift_http:
+              endpoint: 0.0.0.0:14268
+            thrift_compact:
+              endpoint: 0.0.0.0:6831
+            thrift_binary:
+              endpoint: 0.0.0.0:6832
+        zipkin:
+          endpoint: 0.0.0.0:9411
+      
+      processors:
+        batch:
+          timeout: 1s
+          send_batch_size: 1024
+        memory_limiter:
+          limit_mib: 512
+        resource:
+          attributes:
+          - key: service.name
+            from_attribute: service_name
+            action: insert
+          - key: service.version
+            from_attribute: service_version
+            action: insert
+      
+      exporters:
+        jaeger:
+          endpoint: finbot-jaeger-collector.monitoring.svc.cluster.local:14250
+          tls:
+            insecure: true
+      
+      service:
+        pipelines:
+          traces:
+            receivers: [otlp, jaeger, zipkin]
+            processors: [memory_limiter, resource, batch]
+            exporters: [jaeger]
+        extensions: [health_check]
+  query:
+    replicas: 2
+    resources:
+      requests:
+        cpu: 200m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    options:
+      query:
+        base-path: /
+        log-level: info
+        max-clock-skew-adjustment: 0s
+  agent:
+    strategy: DaemonSet
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    config: |
+      reporters:
+        grpc:
+          host-port: finbot-jaeger-collector.monitoring.svc.cluster.local:14250
+      processor:
+        jaeger-compact:
+          server-max-packet-size: 65000
+        jaeger-binary:
+          server-max-packet-size: 65000
+  ingress:
+    enabled: false
+  volumeMounts:
+  - name: jaeger-config
+    mountPath: /etc/jaeger
+  volumes:
+  - name: jaeger-config
+    configMap:
+      name: jaeger-config
+
+---
+# Jaeger Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jaeger-config
+  namespace: monitoring
+data:
+  sampling_strategies.json: |
+    {
+      "service_strategies": [
+        {
+          "service": "finbot-api",
+          "type": "probabilistic",
+          "param": 0.1,
+          "max_traces_per_second": 100,
+          "operation_strategies": [
+            {
+              "operation": "GET /health",
+              "type": "probabilistic",
+              "param": 0.01
+            },
+            {
+              "operation": "GET /metrics",
+              "type": "probabilistic",
+              "param": 0.01
+            },
+            {
+              "operation": "POST /api/auth/login",
+              "type": "probabilistic",
+              "param": 1.0
+            },
+            {
+              "operation": "POST /api/transactions",
+              "type": "probabilistic",
+              "param": 0.5
+            }
+          ]
+        },
+        {
+          "service": "finbot-web",
+          "type": "probabilistic",
+          "param": 0.05
+        },
+        {
+          "service": "postgresql",
+          "type": "probabilistic",
+          "param": 0.1
+        },
+        {
+          "service": "redis",
+          "type": "probabilistic",
+          "param": 0.05
+        }
+      ],
+      "default_strategy": {
+        "type": "probabilistic",
+        "param": 0.01,
+        "max_traces_per_second": 50
+      },
+      "per_operation_strategies": [
+        {
+          "operation": "health_check",
+          "type": "probabilistic",
+          "param": 0.001
+        }
+      ]
+    }
+
+---
+# Jaeger Gateway for External Access
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: jaeger-gateway
+  namespace: monitoring
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: jaeger-tls-secret
+    hosts:
+    - "jaeger.finbot.com"
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "jaeger.finbot.com"
+    tls:
+      httpsRedirect: true
+
+---
+# Jaeger VirtualService
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: jaeger-vs
+  namespace: monitoring
+spec:
+  hosts:
+  - "jaeger.finbot.com"
+  gateways:
+  - jaeger-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/"
+    route:
+    - destination:
+        host: finbot-jaeger-query.monitoring.svc.cluster.local
+        port:
+          number: 16686
+    timeout: 30s
+    headers:
+      response:
+        set:
+          x-content-type-options: nosniff
+          x-frame-options: SAMEORIGIN
+          x-xss-protection: "1; mode=block"
+
+---
+# Jaeger TLS Certificate External Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: jaeger-tls-certificate
+  namespace: monitoring
+spec:
+  refreshInterval: 86400s # 24 hours
+  secretStoreRef:
+    name: vault-cluster-backend
+    kind: ClusterSecretStore
+  target:
+    name: jaeger-tls-secret
+    creationPolicy: Owner
+    template:
+      type: kubernetes.io/tls
+      data:
+        tls.crt: "{{ .certificate }}"
+        tls.key: "{{ .private_key }}"
+        ca.crt: "{{ .ca_certificate }}"
+  data:
+  - secretKey: certificate
+    remoteRef:
+      key: finbot/tls/jaeger
+      property: certificate
+  - secretKey: private_key
+    remoteRef:
+      key: finbot/tls/jaeger
+      property: private_key
+  - secretKey: ca_certificate
+    remoteRef:
+      key: finbot/tls/jaeger
+      property: ca_certificate
+
+---
+# Jaeger ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jaeger
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: jaeger
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  endpoints:
+  - port: admin-http
+    interval: 30s
+    path: /metrics
+
+---
+# Jaeger Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger-network-policy
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from istio-system (ingress gateway)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 16686 # Query UI
+  # Allow ingress from application namespaces for tracing
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: production
+    - namespaceSelector:
+        matchLabels:
+          name: staging
+    ports:
+    - protocol: TCP
+      port: 14250 # gRPC
+    - protocol: TCP
+      port: 14268 # HTTP
+    - protocol: UDP
+      port: 6831  # Compact thrift
+    - protocol: UDP
+      port: 6832  # Binary thrift
+    - protocol: TCP
+      port: 9411  # Zipkin
+  # Allow intra-namespace communication
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+  egress:
+  # Allow egress to Elasticsearch
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    ports:
+    - protocol: TCP
+      port: 9200 # Elasticsearch
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# Jaeger Trace Cleanup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jaeger-trace-cleanup
+  namespace: monitoring
+spec:
+  schedule: "0 1 * * *" # Daily at 1 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: jaeger-cleanup
+          restartPolicy: OnFailure
+          containers:
+          - name: trace-cleanup
+            image: curlimages/curl:latest
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Starting Jaeger trace cleanup..."
+              
+              # Delete traces older than 7 days
+              CUTOFF_DATE=$(date -d '7 days ago' '+%Y-%m-%d')
+              
+              # Delete old indices
+              curl -X DELETE "https://elasticsearch.monitoring.svc.cluster.local:9200/jaeger-span-*${CUTOFF_DATE}*" \
+                -u elastic:$ELASTICSEARCH_PASSWORD \
+                -k || echo "No old indices to delete"
+              
+              # Delete old service indices
+              curl -X DELETE "https://elasticsearch.monitoring.svc.cluster.local:9200/jaeger-service-*${CUTOFF_DATE}*" \
+                -u elastic:$ELASTICSEARCH_PASSWORD \
+                -k || echo "No old service indices to delete"
+              
+              echo "Jaeger trace cleanup completed!"
+            env:
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-credentials
+                  key: password
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+
+---
+# Jaeger Cleanup Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jaeger-cleanup
+  namespace: monitoring

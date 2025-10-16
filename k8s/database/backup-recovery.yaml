@@ -1,0 +1,623 @@
+# FinBot v4 - Database Backup and Recovery
+# Automated backup system with point-in-time recovery capabilities
+
+---
+# Scheduled Backup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: database
+  labels:
+    app: postgresql
+    component: backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: postgresql
+            component: backup
+        spec:
+          serviceAccountName: postgres-backup
+          restartPolicy: OnFailure
+          containers:
+          - name: postgres-backup
+            image: postgres:15-alpine
+            command: ["/bin/sh"]
+            args:
+            - -c
+            - |
+              set -e
+              
+              # Environment variables
+              export PGHOST=postgres-primary.database.svc.cluster.local
+              export PGPORT=5432
+              export PGDATABASE=finbot_v4
+              export PGUSER=$(cat /etc/secrets/username)
+              export PGPASSWORD=$(cat /etc/secrets/password)
+              
+              # Backup configuration
+              BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
+              BACKUP_DIR="/tmp/backup"
+              BACKUP_FILE="finbot_v4_backup_${BACKUP_DATE}.sql"
+              BACKUP_PATH="${BACKUP_DIR}/${BACKUP_FILE}"
+              
+              echo "Starting backup at $(date)"
+              echo "Backup file: ${BACKUP_FILE}"
+              
+              # Create backup directory
+              mkdir -p ${BACKUP_DIR}
+              
+              # Test database connection
+              echo "Testing database connection..."
+              pg_isready -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE}
+              
+              # Create full database backup
+              echo "Creating database backup..."
+              pg_dump \
+                --verbose \
+                --format=custom \
+                --compress=9 \
+                --no-owner \
+                --no-privileges \
+                --file=${BACKUP_PATH} \
+                ${PGDATABASE}
+              
+              # Verify backup file
+              if [ ! -f "${BACKUP_PATH}" ]; then
+                echo "ERROR: Backup file not created"
+                exit 1
+              fi
+              
+              BACKUP_SIZE=$(du -h ${BACKUP_PATH} | cut -f1)
+              echo "Backup created successfully. Size: ${BACKUP_SIZE}"
+              
+              # Upload to S3 using AWS CLI
+              echo "Uploading backup to S3..."
+              aws s3 cp ${BACKUP_PATH} s3://finbot-backups/postgresql/daily/${BACKUP_FILE} \
+                --storage-class STANDARD_IA \
+                --server-side-encryption AES256
+              
+              # Verify upload
+              if aws s3 ls s3://finbot-backups/postgresql/daily/${BACKUP_FILE} > /dev/null; then
+                echo "Backup uploaded successfully to S3"
+              else
+                echo "ERROR: Failed to upload backup to S3"
+                exit 1
+              fi
+              
+              # Create backup metadata
+              cat > /tmp/backup_metadata.json << EOF
+              {
+                "backup_date": "${BACKUP_DATE}",
+                "backup_file": "${BACKUP_FILE}",
+                "backup_size": "${BACKUP_SIZE}",
+                "database": "${PGDATABASE}",
+                "backup_type": "full",
+                "compression": "gzip",
+                "format": "custom",
+                "s3_path": "s3://finbot-backups/postgresql/daily/${BACKUP_FILE}",
+                "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              }
+              EOF
+              
+              # Upload metadata
+              aws s3 cp /tmp/backup_metadata.json s3://finbot-backups/postgresql/metadata/${BACKUP_DATE}_metadata.json
+              
+              # Cleanup old local files
+              rm -f ${BACKUP_PATH} /tmp/backup_metadata.json
+              
+              echo "Backup completed successfully at $(date)"
+            env:
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: SECRET_ACCESS_KEY
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 1000m
+                memory: 2Gi
+            volumeMounts:
+            - name: postgres-credentials
+              mountPath: /etc/secrets
+              readOnly: true
+          volumes:
+          - name: postgres-credentials
+            secret:
+              secretName: postgres-credentials
+          activeDeadlineSeconds: 3600  # 1 hour timeout
+
+---
+# WAL Archive CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-wal-archive
+  namespace: database
+  labels:
+    app: postgresql
+    component: wal-archive
+spec:
+  schedule: "*/15 * * * *"  # Every 15 minutes
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: postgresql
+            component: wal-archive
+        spec:
+          serviceAccountName: postgres-backup
+          restartPolicy: OnFailure
+          containers:
+          - name: wal-archiver
+            image: postgres:15-alpine
+            command: ["/bin/sh"]
+            args:
+            - -c
+            - |
+              set -e
+              
+              echo "Starting WAL archive process at $(date)"
+              
+              # Environment variables
+              export PGHOST=postgres-primary.database.svc.cluster.local
+              export PGPORT=5432
+              export PGUSER=$(cat /etc/secrets/username)
+              export PGPASSWORD=$(cat /etc/secrets/password)
+              
+              # Check if WAL archiving is enabled
+              WAL_LEVEL=$(psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d postgres -t -c "SHOW wal_level;" | xargs)
+              echo "Current WAL level: ${WAL_LEVEL}"
+              
+              if [ "${WAL_LEVEL}" != "replica" ] && [ "${WAL_LEVEL}" != "logical" ]; then
+                echo "WAL level is not suitable for archiving. Current: ${WAL_LEVEL}"
+                exit 0
+              fi
+              
+              # Get current WAL file
+              CURRENT_WAL=$(psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d postgres -t -c "SELECT pg_walfile_name(pg_current_wal_lsn());" | xargs)
+              echo "Current WAL file: ${CURRENT_WAL}"
+              
+              # Force WAL switch to ensure archiving
+              psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d postgres -c "SELECT pg_switch_wal();"
+              
+              echo "WAL archive process completed at $(date)"
+            env:
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: SECRET_ACCESS_KEY
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 512Mi
+            volumeMounts:
+            - name: postgres-credentials
+              mountPath: /etc/secrets
+              readOnly: true
+          volumes:
+          - name: postgres-credentials
+            secret:
+              secretName: postgres-credentials
+          activeDeadlineSeconds: 900  # 15 minutes timeout
+
+---
+# Backup Cleanup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup-cleanup
+  namespace: database
+  labels:
+    app: postgresql
+    component: backup-cleanup
+spec:
+  schedule: "0 4 * * 0"  # Weekly on Sunday at 4 AM
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: postgresql
+            component: backup-cleanup
+        spec:
+          serviceAccountName: postgres-backup
+          restartPolicy: OnFailure
+          containers:
+          - name: backup-cleanup
+            image: amazon/aws-cli:2.13.25
+            command: ["/bin/sh"]
+            args:
+            - -c
+            - |
+              set -e
+              
+              echo "Starting backup cleanup at $(date)"
+              
+              # Cleanup old daily backups (keep 30 days)
+              echo "Cleaning up daily backups older than 30 days..."
+              CUTOFF_DATE=$(date -d '30 days ago' +%Y%m%d)
+              
+              aws s3 ls s3://finbot-backups/postgresql/daily/ | while read -r line; do
+                BACKUP_DATE=$(echo $line | awk '{print $4}' | grep -o '[0-9]\{8\}' | head -1)
+                if [ ! -z "$BACKUP_DATE" ] && [ "$BACKUP_DATE" -lt "$CUTOFF_DATE" ]; then
+                  BACKUP_FILE=$(echo $line | awk '{print $4}')
+                  echo "Deleting old backup: $BACKUP_FILE"
+                  aws s3 rm s3://finbot-backups/postgresql/daily/$BACKUP_FILE
+                fi
+              done
+              
+              # Cleanup old WAL files (keep 7 days)
+              echo "Cleaning up WAL files older than 7 days..."
+              WAL_CUTOFF_DATE=$(date -d '7 days ago' +%Y%m%d)
+              
+              aws s3 ls s3://finbot-backups/postgresql/wal/ | while read -r line; do
+                WAL_DATE=$(echo $line | awk '{print $1}' | tr -d '-')
+                if [ ! -z "$WAL_DATE" ] && [ "$WAL_DATE" -lt "$WAL_CUTOFF_DATE" ]; then
+                  WAL_FILE=$(echo $line | awk '{print $4}')
+                  echo "Deleting old WAL file: $WAL_FILE"
+                  aws s3 rm s3://finbot-backups/postgresql/wal/$WAL_FILE
+                fi
+              done
+              
+              # Cleanup old metadata files (keep 90 days)
+              echo "Cleaning up metadata files older than 90 days..."
+              METADATA_CUTOFF_DATE=$(date -d '90 days ago' +%Y%m%d)
+              
+              aws s3 ls s3://finbot-backups/postgresql/metadata/ | while read -r line; do
+                METADATA_DATE=$(echo $line | awk '{print $4}' | grep -o '[0-9]\{8\}' | head -1)
+                if [ ! -z "$METADATA_DATE" ] && [ "$METADATA_DATE" -lt "$METADATA_CUTOFF_DATE" ]; then
+                  METADATA_FILE=$(echo $line | awk '{print $4}')
+                  echo "Deleting old metadata: $METADATA_FILE"
+                  aws s3 rm s3://finbot-backups/postgresql/metadata/$METADATA_FILE
+                fi
+              done
+              
+              echo "Backup cleanup completed at $(date)"
+            env:
+            - name: AWS_DEFAULT_REGION
+              value: "us-west-2"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backup-credentials
+                  key: SECRET_ACCESS_KEY
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 512Mi
+          activeDeadlineSeconds: 1800  # 30 minutes timeout
+
+---
+# Database Recovery Job Template
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-recovery-template
+  namespace: database
+  labels:
+    app: postgresql
+    component: recovery
+spec:
+  template:
+    metadata:
+      labels:
+        app: postgresql
+        component: recovery
+    spec:
+      serviceAccountName: postgres-backup
+      restartPolicy: Never
+      containers:
+      - name: postgres-recovery
+        image: postgres:15-alpine
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          set -e
+          
+          echo "Starting database recovery at $(date)"
+          
+          # Recovery parameters (set via environment variables)
+          BACKUP_FILE=${BACKUP_FILE:-"latest"}
+          RECOVERY_TARGET_TIME=${RECOVERY_TARGET_TIME:-""}
+          RECOVERY_TARGET_XID=${RECOVERY_TARGET_XID:-""}
+          
+          # Environment variables
+          export PGHOST=postgres-primary.database.svc.cluster.local
+          export PGPORT=5432
+          export PGUSER=$(cat /etc/secrets/username)
+          export PGPASSWORD=$(cat /etc/secrets/password)
+          
+          echo "Recovery parameters:"
+          echo "  Backup file: ${BACKUP_FILE}"
+          echo "  Target time: ${RECOVERY_TARGET_TIME}"
+          echo "  Target XID: ${RECOVERY_TARGET_XID}"
+          
+          # Download backup from S3
+          if [ "${BACKUP_FILE}" = "latest" ]; then
+            echo "Finding latest backup..."
+            BACKUP_FILE=$(aws s3 ls s3://finbot-backups/postgresql/daily/ | sort | tail -n 1 | awk '{print $4}')
+          fi
+          
+          echo "Downloading backup: ${BACKUP_FILE}"
+          aws s3 cp s3://finbot-backups/postgresql/daily/${BACKUP_FILE} /tmp/${BACKUP_FILE}
+          
+          # Verify backup file
+          if [ ! -f "/tmp/${BACKUP_FILE}" ]; then
+            echo "ERROR: Backup file not found"
+            exit 1
+          fi
+          
+          echo "Backup file downloaded successfully"
+          
+          # Create recovery database (this is a template - actual recovery would need cluster coordination)
+          echo "Recovery process would restore from backup file: ${BACKUP_FILE}"
+          echo "This is a template job - actual recovery requires manual intervention"
+          echo "Recovery completed at $(date)"
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "us-west-2"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: backup-credentials
+              key: ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backup-credentials
+              key: SECRET_ACCESS_KEY
+        - name: BACKUP_FILE
+          value: "latest"  # Can be overridden
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        volumeMounts:
+        - name: postgres-credentials
+          mountPath: /etc/secrets
+          readOnly: true
+      volumes:
+      - name: postgres-credentials
+        secret:
+          secretName: postgres-credentials
+      activeDeadlineSeconds: 7200  # 2 hours timeout
+
+---
+# Backup Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-backup
+  namespace: database
+  labels:
+    app: postgresql
+    component: backup
+
+---
+# Backup Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: database
+  name: postgres-backup-role
+  labels:
+    app: postgresql
+    component: backup
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: ["postgresql.cnpg.io"]
+  resources: ["clusters", "backups"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+---
+# Backup RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: postgres-backup-binding
+  namespace: database
+  labels:
+    app: postgresql
+    component: backup
+subjects:
+- kind: ServiceAccount
+  name: postgres-backup
+  namespace: database
+roleRef:
+  kind: Role
+  name: postgres-backup-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Backup Monitoring Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: backup-monitor
+  namespace: database
+  labels:
+    app: postgresql
+    component: backup-monitor
+spec:
+  selector:
+    app: backup-monitor
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+---
+# Backup Monitoring Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backup-monitor
+  namespace: database
+  labels:
+    app: backup-monitor
+    component: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backup-monitor
+  template:
+    metadata:
+      labels:
+        app: backup-monitor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: postgres-backup
+      containers:
+      - name: backup-monitor
+        image: curlimages/curl:8.4.0
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          while true; do
+            echo "$(date): Checking backup status..."
+            
+            # Check latest backup
+            LATEST_BACKUP=$(aws s3 ls s3://finbot-backups/postgresql/daily/ | sort | tail -n 1 | awk '{print $1, $2, $4}')
+            echo "Latest backup: $LATEST_BACKUP"
+            
+            # Check backup age
+            if [ ! -z "$LATEST_BACKUP" ]; then
+              BACKUP_DATE=$(echo $LATEST_BACKUP | awk '{print $1}')
+              CURRENT_DATE=$(date +%Y-%m-%d)
+              
+              if [ "$BACKUP_DATE" = "$CURRENT_DATE" ]; then
+                echo "✅ Backup is current"
+              else
+                echo "⚠️  Backup is outdated: $BACKUP_DATE"
+              fi
+            else
+              echo "❌ No backups found"
+            fi
+            
+            sleep 3600  # Check every hour
+          done
+        env:
+        - name: AWS_DEFAULT_REGION
+          value: "us-west-2"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: backup-credentials
+              key: ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backup-credentials
+              key: SECRET_ACCESS_KEY
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+
+---
+# Backup Alerts PrometheusRule
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: postgres-backup-alerts
+  namespace: monitoring
+  labels:
+    app: postgresql
+    component: backup-alerts
+spec:
+  groups:
+  - name: postgres-backup.rules
+    rules:
+    - alert: PostgreSQLBackupFailed
+      expr: kube_job_status_failed{job_name=~"postgres-backup.*"} > 0
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "PostgreSQL backup job failed"
+        description: "PostgreSQL backup job {{ $labels.job_name }} has failed"
+    
+    - alert: PostgreSQLBackupMissing
+      expr: time() - kube_job_status_completion_time{job_name=~"postgres-backup.*"} > 86400
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "PostgreSQL backup is overdue"
+        description: "PostgreSQL backup has not completed successfully in the last 24 hours"
+    
+    - alert: PostgreSQLWALArchiveFailed
+      expr: kube_job_status_failed{job_name=~"postgres-wal-archive.*"} > 0
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: "PostgreSQL WAL archive failed"
+        description: "PostgreSQL WAL archive job {{ $labels.job_name }} has failed"

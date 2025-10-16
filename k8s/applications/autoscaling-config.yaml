@@ -1,0 +1,669 @@
+# FinBot v4 - Horizontal Pod Autoscaling Configuration
+# Advanced autoscaling with custom metrics and predictive scaling
+
+---
+# Metrics Server (if not already deployed)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metrics-server
+  namespace: kube-system
+  labels:
+    k8s-app: metrics-server
+spec:
+  selector:
+    matchLabels:
+      k8s-app: metrics-server
+  template:
+    metadata:
+      labels:
+        k8s-app: metrics-server
+    spec:
+      serviceAccountName: metrics-server
+      volumes:
+      - name: tmp-dir
+        emptyDir: {}
+      priorityClassName: system-cluster-critical
+      containers:
+      - name: metrics-server
+        image: registry.k8s.io/metrics-server/metrics-server:v0.6.4
+        imagePullPolicy: IfNotPresent
+        args:
+        - --cert-dir=/tmp
+        - --secure-port=4443
+        - --kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname
+        - --kubelet-use-node-status-port
+        - --metric-resolution=15s
+        - --kubelet-insecure-tls
+        resources:
+          requests:
+            cpu: 100m
+            memory: 200Mi
+        ports:
+        - name: https
+          containerPort: 4443
+          protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: https
+            scheme: HTTPS
+          periodSeconds: 10
+          failureThreshold: 3
+          initialDelaySeconds: 20
+        livenessProbe:
+          httpGet:
+            path: /livez
+            port: https
+            scheme: HTTPS
+          periodSeconds: 10
+          failureThreshold: 3
+          initialDelaySeconds: 20
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tmp-dir
+          mountPath: /tmp
+
+---
+# FinBot API HPA with Custom Metrics
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: finbot-api-hpa
+  namespace: production
+  labels:
+    app: finbot-api
+    component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-api
+  minReplicas: 5
+  maxReplicas: 50
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  # Custom metric: Request rate per pod
+  - type: Pods
+    pods:
+      metric:
+        name: http_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
+  # Custom metric: Response time
+  - type: Pods
+    pods:
+      metric:
+        name: http_request_duration_p95
+      target:
+        type: AverageValue
+        averageValue: "2000m"  # 2 seconds
+  # Custom metric: Database connection pool usage
+  - type: Pods
+    pods:
+      metric:
+        name: database_connection_pool_usage
+      target:
+        type: AverageValue
+        averageValue: "0.7"  # 70%
+  # External metric: Queue depth (if using message queues)
+  - type: External
+    external:
+      metric:
+        name: sqs_queue_depth
+        selector:
+          matchLabels:
+            queue: finbot-tasks
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 5 minutes
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 60   # 1 minute
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      - type: Pods
+        value: 5
+        periodSeconds: 60
+      selectPolicy: Max
+
+---
+# FinBot Web HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: finbot-web-hpa
+  namespace: production
+  labels:
+    app: finbot-web
+    component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-web
+  minReplicas: 4
+  maxReplicas: 20
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  # Custom metric: Request rate per pod
+  - type: Pods
+    pods:
+      metric:
+        name: nginx_requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "200"
+  # Custom metric: Active connections
+  - type: Pods
+    pods:
+      metric:
+        name: nginx_active_connections
+      target:
+        type: AverageValue
+        averageValue: "100"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 15
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+      - type: Pods
+        value: 4
+        periodSeconds: 30
+      selectPolicy: Max
+
+---
+# FinBot Admin HPA (Conservative scaling)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: finbot-admin-hpa
+  namespace: production
+  labels:
+    app: finbot-admin
+    component: autoscaling
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-admin
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  # CPU-based scaling
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 75
+  # Memory-based scaling
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  # Custom metric: Active admin sessions
+  - type: Pods
+    pods:
+      metric:
+        name: admin_active_sessions
+      target:
+        type: AverageValue
+        averageValue: "10"
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600  # 10 minutes (conservative)
+      policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 120
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 120  # 2 minutes
+      policies:
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Max
+
+---
+# Vertical Pod Autoscaler for API (Recommendation Mode)
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: finbot-api-vpa
+  namespace: production
+  labels:
+    app: finbot-api
+    component: autoscaling
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-api
+  updatePolicy:
+    updateMode: "Off"  # Recommendation only, no automatic updates
+  resourcePolicy:
+    containerPolicies:
+    - containerName: finbot-api
+      minAllowed:
+        cpu: 500m
+        memory: 1Gi
+      maxAllowed:
+        cpu: 4000m
+        memory: 8Gi
+      controlledResources: ["cpu", "memory"]
+      controlledValues: RequestsAndLimits
+
+---
+# Vertical Pod Autoscaler for Web
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: finbot-web-vpa
+  namespace: production
+  labels:
+    app: finbot-web
+    component: autoscaling
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: finbot-web
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+    - containerName: finbot-web
+      minAllowed:
+        cpu: 100m
+        memory: 256Mi
+      maxAllowed:
+        cpu: 1000m
+        memory: 2Gi
+      controlledResources: ["cpu", "memory"]
+      controlledValues: RequestsAndLimits
+
+---
+# Custom Metrics API Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-metrics-config
+  namespace: monitoring
+  labels:
+    app: custom-metrics
+data:
+  config.yaml: |
+    # Custom metrics configuration for HPA
+    metrics:
+      # API metrics
+      - name: http_requests_per_second
+        query: 'rate(http_requests_total{job="finbot-api"}[1m])'
+        type: pods
+        
+      - name: http_request_duration_p95
+        query: 'histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="finbot-api"}[5m])) * 1000'
+        type: pods
+        
+      - name: database_connection_pool_usage
+        query: 'pg_stat_database_numbackends{datname="finbot_production"} / pg_settings_max_connections'
+        type: pods
+        
+      # Web metrics
+      - name: nginx_requests_per_second
+        query: 'rate(nginx_http_requests_total{job="finbot-web"}[1m])'
+        type: pods
+        
+      - name: nginx_active_connections
+        query: 'nginx_connections_active{job="finbot-web"}'
+        type: pods
+        
+      # Admin metrics
+      - name: admin_active_sessions
+        query: 'redis_connected_clients{instance=~".*admin.*"}'
+        type: pods
+        
+      # External metrics
+      - name: sqs_queue_depth
+        query: 'aws_sqs_approximate_number_of_messages_visible{queue_name="finbot-tasks"}'
+        type: external
+
+---
+# Prometheus Adapter for Custom Metrics
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-metrics-apiserver
+  namespace: monitoring
+  labels:
+    app: custom-metrics-apiserver
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: custom-metrics-apiserver
+  template:
+    metadata:
+      labels:
+        app: custom-metrics-apiserver
+    spec:
+      serviceAccountName: custom-metrics-apiserver
+      containers:
+      - name: custom-metrics-apiserver
+        image: registry.k8s.io/prometheus-adapter/prometheus-adapter:v0.11.2
+        args:
+        - --secure-port=6443
+        - --tls-cert-file=/var/run/serving-cert/tls.crt
+        - --tls-private-key-file=/var/run/serving-cert/tls.key
+        - --logtostderr=true
+        - --prometheus-url=http://prometheus.monitoring.svc.cluster.local:9090/
+        - --metrics-relist-interval=1m
+        - --v=4
+        - --config=/etc/adapter/config.yaml
+        ports:
+        - containerPort: 6443
+          name: https
+        volumeMounts:
+        - mountPath: /var/run/serving-cert
+          name: volume-serving-cert
+          readOnly: true
+        - mountPath: /etc/adapter/
+          name: config
+          readOnly: true
+        - mountPath: /tmp
+          name: tmp-vol
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: volume-serving-cert
+        secret:
+          secretName: cm-adapter-serving-certs
+      - name: config
+        configMap:
+          name: adapter-config
+      - name: tmp-vol
+        emptyDir: {}
+
+---
+# Custom Metrics API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-metrics-apiserver
+  namespace: monitoring
+  labels:
+    app: custom-metrics-apiserver
+spec:
+  ports:
+  - name: https
+    port: 443
+    targetPort: 6443
+  selector:
+    app: custom-metrics-apiserver
+
+---
+# Cluster Autoscaler Configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  labels:
+    app: cluster-autoscaler
+spec:
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+  template:
+    metadata:
+      labels:
+        app: cluster-autoscaler
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8085"
+    spec:
+      priorityClassName: system-cluster-critical
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      serviceAccountName: cluster-autoscaler
+      containers:
+      - image: registry.k8s.io/autoscaling/cluster-autoscaler:v1.28.2
+        name: cluster-autoscaler
+        resources:
+          limits:
+            cpu: 100m
+            memory: 600Mi
+          requests:
+            cpu: 100m
+            memory: 600Mi
+        command:
+        - ./cluster-autoscaler
+        - --v=4
+        - --stderrthreshold=info
+        - --cloud-provider=aws
+        - --skip-nodes-with-local-storage=false
+        - --expander=least-waste
+        - --node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/finbot-cluster
+        - --balance-similar-node-groups
+        - --scale-down-enabled=true
+        - --scale-down-delay-after-add=10m
+        - --scale-down-unneeded-time=10m
+        - --scale-down-utilization-threshold=0.5
+        - --max-node-provision-time=15m
+        - --scan-interval=10s
+        - --max-nodes-total=100
+        - --cores-total=0:1000
+        - --memory-total=0:1000000
+        - --skip-nodes-with-system-pods=false
+        volumeMounts:
+        - name: ssl-certs
+          mountPath: /etc/ssl/certs/ca-certificates.crt
+          readOnly: true
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+      volumes:
+      - name: ssl-certs
+        hostPath:
+          path: /etc/ssl/certs/ca-certificates.crt
+
+---
+# Predictive Scaling Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: predictive-scaling-config
+  namespace: production
+  labels:
+    app: predictive-scaling
+data:
+  config.yaml: |
+    # Predictive scaling configuration
+    predictive_scaling:
+      enabled: true
+      
+      # Time-based patterns
+      time_patterns:
+        - name: "business_hours"
+          schedule: "0 8 * * 1-5"  # 8 AM weekdays
+          scale_factor: 1.5
+          duration: "10h"
+          
+        - name: "weekend_low"
+          schedule: "0 0 * * 6,0"  # Weekends
+          scale_factor: 0.7
+          duration: "48h"
+          
+        - name: "month_end"
+          schedule: "0 0 28-31 * *"  # Month end
+          scale_factor: 2.0
+          duration: "72h"
+      
+      # Historical data analysis
+      historical_analysis:
+        enabled: true
+        lookback_days: 30
+        confidence_threshold: 0.8
+        
+      # Machine learning predictions
+      ml_predictions:
+        enabled: true
+        model_type: "time_series"
+        prediction_horizon: "2h"
+        retrain_interval: "24h"
+        
+      # Scaling policies
+      scaling_policies:
+        api:
+          min_replicas: 5
+          max_replicas: 50
+          target_cpu: 70
+          prediction_buffer: 0.2
+          
+        web:
+          min_replicas: 4
+          max_replicas: 20
+          target_cpu: 60
+          prediction_buffer: 0.15
+
+---
+# HPA Monitoring and Alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: hpa-monitoring-rules
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: autoscaling
+spec:
+  groups:
+  - name: hpa.rules
+    interval: 30s
+    rules:
+    - alert: HPAScalingFrequent
+      expr: |
+        increase(kube_hpa_status_current_replicas[10m]) > 5 or
+        increase(kube_hpa_status_current_replicas[10m]) < -5
+      for: 5m
+      labels:
+        severity: warning
+        component: autoscaling
+      annotations:
+        summary: "HPA scaling too frequently"
+        description: "HPA {{ $labels.hpa }} in namespace {{ $labels.namespace }} is scaling frequently."
+    
+    - alert: HPAMaxReplicasReached
+      expr: |
+        kube_hpa_status_current_replicas == kube_hpa_spec_max_replicas
+      for: 10m
+      labels:
+        severity: warning
+        component: autoscaling
+      annotations:
+        summary: "HPA reached maximum replicas"
+        description: "HPA {{ $labels.hpa }} has reached maximum replicas ({{ $value }})."
+    
+    - alert: HPATargetNotMet
+      expr: |
+        abs(kube_hpa_status_current_replicas - kube_hpa_status_desired_replicas) > 2
+      for: 15m
+      labels:
+        severity: warning
+        component: autoscaling
+      annotations:
+        summary: "HPA target not met"
+        description: "HPA {{ $labels.hpa }} cannot reach desired replica count."
+    
+    - alert: ClusterAutoscalerErrors
+      expr: |
+        increase(cluster_autoscaler_errors_total[10m]) > 5
+      for: 5m
+      labels:
+        severity: warning
+        component: cluster-autoscaler
+      annotations:
+        summary: "Cluster Autoscaler errors"
+        description: "Cluster Autoscaler is experiencing errors."

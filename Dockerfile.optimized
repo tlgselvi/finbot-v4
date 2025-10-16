@@ -1,0 +1,235 @@
+# FinBot v4 - Optimized Multi-stage Dockerfile
+# High-performance production build with caching and optimization
+
+# Build arguments
+ARG NODE_VERSION=18-alpine
+ARG NGINX_VERSION=alpine
+
+# ================================
+# Base Node.js image with dependencies
+# ================================
+FROM node:${NODE_VERSION} AS base
+WORKDIR /app
+
+# Install system dependencies
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    libc6-compat \
+    dumb-init
+
+# Copy package files for dependency caching
+COPY package*.json ./
+COPY QuickServeAPI/package*.json ./QuickServeAPI/
+
+# ================================
+# Dependencies stage
+# ================================
+FROM base AS deps
+
+# Install all dependencies (including devDependencies for build)
+RUN npm ci --include=dev --frozen-lockfile
+
+# Install server dependencies
+WORKDIR /app/QuickServeAPI
+RUN npm ci --include=dev --frozen-lockfile
+
+# ================================
+# Client build stage
+# ================================
+FROM base AS client-builder
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/QuickServeAPI/node_modules ./QuickServeAPI/node_modules
+
+# Copy client source code
+COPY QuickServeAPI/client ./QuickServeAPI/client
+COPY QuickServeAPI/package*.json ./QuickServeAPI/
+
+# Build client application
+WORKDIR /app/QuickServeAPI/client
+ENV NODE_ENV=production
+ENV GENERATE_SOURCEMAP=false
+ENV INLINE_RUNTIME_CHUNK=false
+
+# Build optimizations
+ENV REACT_APP_BUILD_OPTIMIZATION=true
+ENV REACT_APP_BUNDLE_ANALYZER=false
+
+RUN npm run build
+
+# Optimize built assets
+RUN npm run optimize:assets || true
+
+# ================================
+# Server build stage
+# ================================
+FROM base AS server-builder
+WORKDIR /app
+
+# Copy dependencies from deps stage
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/QuickServeAPI/node_modules ./QuickServeAPI/node_modules
+
+# Copy server source code
+COPY QuickServeAPI/server ./QuickServeAPI/server
+COPY QuickServeAPI/package*.json ./QuickServeAPI/
+COPY QuickServeAPI/tsconfig*.json ./QuickServeAPI/
+
+# Build server application
+WORKDIR /app/QuickServeAPI
+ENV NODE_ENV=production
+
+# TypeScript compilation with optimizations
+RUN npm run build
+
+# Remove development dependencies
+RUN npm ci --only=production --frozen-lockfile
+
+# ================================
+# Production dependencies stage
+# ================================
+FROM base AS prod-deps
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+COPY QuickServeAPI/package*.json ./QuickServeAPI/
+
+# Install only production dependencies
+RUN npm ci --only=production --frozen-lockfile
+
+WORKDIR /app/QuickServeAPI
+RUN npm ci --only=production --frozen-lockfile
+
+# Clean npm cache
+RUN npm cache clean --force
+
+# ================================
+# Runtime stage
+# ================================
+FROM node:${NODE_VERSION} AS runtime
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S finbot -u 1001
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    ca-certificates
+
+WORKDIR /app
+
+# Copy production dependencies
+COPY --from=prod-deps --chown=finbot:nodejs /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=finbot:nodejs /app/QuickServeAPI/node_modules ./QuickServeAPI/node_modules
+
+# Copy built server application
+COPY --from=server-builder --chown=finbot:nodejs /app/QuickServeAPI/dist ./QuickServeAPI/dist
+COPY --from=server-builder --chown=finbot:nodejs /app/QuickServeAPI/package*.json ./QuickServeAPI/
+
+# Copy built client application
+COPY --from=client-builder --chown=finbot:nodejs /app/QuickServeAPI/client/build ./QuickServeAPI/client/build
+
+# Copy configuration files
+COPY --chown=finbot:nodejs docker-compose.production.yml ./
+COPY --chown=finbot:nodejs database ./database
+
+# Set environment variables
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV HOST=0.0.0.0
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:3001/health || exit 1
+
+# Switch to non-root user
+USER finbot
+
+# Expose port
+EXPOSE 3001
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
+
+# Start the application
+CMD ["node", "QuickServeAPI/dist/server.js"]
+
+# ================================
+# Development stage
+# ================================
+FROM base AS development
+
+# Install development tools
+RUN apk add --no-cache \
+    git \
+    openssh-client
+
+WORKDIR /app
+
+# Copy all dependencies
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/QuickServeAPI/node_modules ./QuickServeAPI/node_modules
+
+# Copy source code
+COPY . .
+
+# Set development environment
+ENV NODE_ENV=development
+ENV PORT=3001
+
+# Expose ports for development
+EXPOSE 3001 3000 9229
+
+# Development command with hot reload
+CMD ["npm", "run", "dev"]
+
+# ================================
+# Testing stage
+# ================================
+FROM base AS testing
+
+WORKDIR /app
+
+# Copy dependencies including dev dependencies
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/QuickServeAPI/node_modules ./QuickServeAPI/node_modules
+
+# Copy source code
+COPY . .
+
+# Set test environment
+ENV NODE_ENV=test
+ENV CI=true
+
+# Run tests
+RUN npm run test:ci
+
+# ================================
+# Nginx stage for serving static assets
+# ================================
+FROM nginx:${NGINX_VERSION} AS nginx
+
+# Copy built client assets
+COPY --from=client-builder /app/QuickServeAPI/client/build /usr/share/nginx/html
+
+# Copy nginx configuration
+COPY nginx/nginx.conf /etc/nginx/nginx.conf
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+
+# Add gzip configuration
+RUN echo 'gzip on; gzip_types text/css application/javascript application/json image/svg+xml;' > /etc/nginx/conf.d/gzip.conf
+
+# Health check for nginx
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost/ || exit 1
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

@@ -1,0 +1,207 @@
+# FinBot v4 - Node Groups Configuration
+# Auto-scaling worker node groups for different workload types
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nodegroup-config
+  namespace: kube-system
+data:
+  # General purpose node group
+  general-purpose: |
+    instance-types: ["t3.medium", "t3.large", "t3.xlarge"]
+    min-size: 3
+    max-size: 10
+    desired-capacity: 3
+    
+  # Compute optimized for API workloads
+  compute-optimized: |
+    instance-types: ["c5.large", "c5.xlarge", "c5.2xlarge"]
+    min-size: 2
+    max-size: 8
+    desired-capacity: 2
+    
+  # Memory optimized for database and cache
+  memory-optimized: |
+    instance-types: ["r5.large", "r5.xlarge", "r5.2xlarge"]
+    min-size: 1
+    max-size: 4
+    desired-capacity: 1
+
+---
+# Node Group Taints and Labels
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-labels-taints
+  namespace: kube-system
+data:
+  general-purpose-labels: |
+    node-type=general-purpose
+    workload=mixed
+    
+  compute-optimized-labels: |
+    node-type=compute-optimized
+    workload=api
+    
+  memory-optimized-labels: |
+    node-type=memory-optimized
+    workload=database
+    
+  memory-optimized-taints: |
+    workload=database:NoSchedule
+
+---
+# Priority Classes for different workloads
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-critical
+value: 2000000000
+globalDefault: false
+description: "Priority class for system critical pods"
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: application-critical
+value: 1000000000
+globalDefault: false
+description: "Priority class for critical application pods"
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: application-normal
+value: 1000000
+globalDefault: true
+description: "Priority class for normal application pods"
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: application-low
+value: 1000
+globalDefault: false
+description: "Priority class for low priority application pods"
+
+---
+# Pod Disruption Budget for critical system components
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: cluster-autoscaler-pdb
+  namespace: kube-system
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: cluster-autoscaler
+
+---
+# Node Problem Detector DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-problem-detector
+  namespace: kube-system
+  labels:
+    app: node-problem-detector
+spec:
+  selector:
+    matchLabels:
+      app: node-problem-detector
+  template:
+    metadata:
+      labels:
+        app: node-problem-detector
+    spec:
+      serviceAccountName: node-problem-detector
+      hostNetwork: true
+      containers:
+      - name: node-problem-detector
+        image: k8s.gcr.io/node-problem-detector/node-problem-detector:v0.8.12
+        command:
+        - /node-problem-detector
+        - --logtostderr
+        - --config.system-log-monitor=/config/kernel-monitor.json,/config/docker-monitor.json
+        - --config.system-stats-monitor=/config/system-stats-monitor.json
+        - --config.custom-plugin-monitor=/config/custom-plugin-monitor.json
+        - --port=20256
+        - --prometheus-address=0.0.0.0
+        - --prometheus-port=20257
+        resources:
+          limits:
+            cpu: 10m
+            memory: 80Mi
+          requests:
+            cpu: 10m
+            memory: 80Mi
+        volumeMounts:
+        - name: log
+          mountPath: /var/log
+          readOnly: true
+        - name: kmsg
+          mountPath: /dev/kmsg
+          readOnly: true
+        - name: localtime
+          mountPath: /etc/localtime
+          readOnly: true
+        - name: config
+          mountPath: /config
+          readOnly: true
+        ports:
+        - containerPort: 20256
+          hostPort: 20256
+          name: exporter
+        - containerPort: 20257
+          hostPort: 20257
+          name: prometheus
+        securityContext:
+          privileged: true
+      volumes:
+      - name: log
+        hostPath:
+          path: /var/log/
+      - name: kmsg
+        hostPath:
+          path: /dev/kmsg
+      - name: localtime
+        hostPath:
+          path: /etc/localtime
+          type: "FileOrCreate"
+      - name: config
+        configMap:
+          name: node-problem-detector-config
+          defaultMode: 0644
+      tolerations:
+      - operator: "Exists"
+        effect: "NoExecute"
+      - operator: "Exists"
+        effect: "NoSchedule"
+
+---
+# Service Account for Node Problem Detector
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-problem-detector
+  namespace: kube-system
+
+---
+# ClusterRoleBinding for Node Problem Detector
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-problem-detector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:node-problem-detector
+subjects:
+- kind: ServiceAccount
+  name: node-problem-detector
+  namespace: kube-system

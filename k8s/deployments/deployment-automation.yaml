@@ -1,0 +1,674 @@
+# FinBot v4 - Deployment Automation and Rollback System
+# Automated deployment orchestration with intelligent rollback capabilities
+
+---
+# Deployment Automation Controller
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-automation
+  namespace: production
+  labels:
+    app: deployment-automation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deployment-automation
+  template:
+    metadata:
+      labels:
+        app: deployment-automation
+    spec:
+      serviceAccountName: deployment-automation
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: controller
+        image: finbot/deployment-automation:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: NAMESPACE
+          value: "production"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus.monitoring.svc.cluster.local:9090"
+        - name: GRAFANA_URL
+          value: "http://grafana.monitoring.svc.cluster.local:3000"
+        - name: SLACK_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: deployment-notifications
+              key: slack-webhook
+        - name: ROLLBACK_THRESHOLD_ERROR_RATE
+          value: "0.05"
+        - name: ROLLBACK_THRESHOLD_LATENCY_P95
+          value: "5000"
+        - name: HEALTH_CHECK_TIMEOUT
+          value: "300"
+        - name: CANARY_STAGES
+          value: "5,25,50,100"
+        - name: STAGE_DURATION
+          value: "300"  # 5 minutes per stage
+        volumeMounts:
+        - name: config
+          mountPath: /etc/config
+        - name: scripts
+          mountPath: /scripts
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: config
+        configMap:
+          name: deployment-config
+      - name: scripts
+        configMap:
+          name: deployment-scripts
+          defaultMode: 0755
+
+---
+# Deployment Automation Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployment-automation
+  namespace: production
+
+---
+# Deployment Automation RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: production
+  name: deployment-automation
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch", "update", "patch", "create"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "delete"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["networking.istio.io"]
+  resources: ["virtualservices", "destinationrules"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deployment-automation
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: deployment-automation
+  namespace: production
+roleRef:
+  kind: Role
+  name: deployment-automation
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Deployment Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deployment-config
+  namespace: production
+data:
+  config.yaml: |
+    # Deployment automation configuration
+    services:
+      - name: "finbot-api"
+        port: 3001
+        health_endpoint: "/health"
+        ready_endpoint: "/ready"
+        metrics_endpoint: "/metrics"
+        min_replicas: 3
+        max_replicas: 20
+        resource_requests:
+          cpu: "500m"
+          memory: "512Mi"
+        resource_limits:
+          cpu: "2000m"
+          memory: "2Gi"
+      
+      - name: "finbot-web"
+        port: 80
+        health_endpoint: "/health"
+        ready_endpoint: "/"
+        metrics_endpoint: "/metrics"
+        min_replicas: 3
+        max_replicas: 10
+        resource_requests:
+          cpu: "100m"
+          memory: "128Mi"
+        resource_limits:
+          cpu: "500m"
+          memory: "512Mi"
+      
+      - name: "finbot-admin"
+        port: 80
+        health_endpoint: "/health"
+        ready_endpoint: "/"
+        metrics_endpoint: "/metrics"
+        min_replicas: 2
+        max_replicas: 5
+        resource_requests:
+          cpu: "100m"
+          memory: "128Mi"
+        resource_limits:
+          cpu: "500m"
+          memory: "512Mi"
+    
+    # Deployment strategy configuration
+    strategy:
+      type: "blue-green"
+      canary_enabled: true
+      canary_stages: [5, 25, 50, 100]
+      stage_duration: 300  # seconds
+      
+      # Health check configuration
+      health_checks:
+        timeout: 30
+        interval: 10
+        healthy_threshold: 3
+        unhealthy_threshold: 3
+        
+      # Rollback configuration
+      rollback:
+        enabled: true
+        automatic: true
+        thresholds:
+          error_rate: 0.05
+          latency_p95: 5000  # milliseconds
+          latency_p99: 10000
+          success_rate: 0.95
+        consecutive_failures: 3
+        
+      # Traffic splitting configuration
+      traffic:
+        initial_weight: 0
+        increment: 25
+        max_weight: 100
+        
+    # Monitoring configuration
+    monitoring:
+      prometheus_url: "http://prometheus.monitoring.svc.cluster.local:9090"
+      metrics_interval: 30
+      evaluation_window: "5m"
+      
+      # Key metrics to monitor
+      metrics:
+        - name: "error_rate"
+          query: "rate(http_requests_total{code=~\"5..\"}[5m]) / rate(http_requests_total[5m])"
+          threshold: 0.05
+          
+        - name: "latency_p95"
+          query: "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))"
+          threshold: 5.0
+          
+        - name: "latency_p99"
+          query: "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))"
+          threshold: 10.0
+          
+        - name: "request_rate"
+          query: "rate(http_requests_total[5m])"
+          threshold: 1.0  # minimum requests per second
+          
+        - name: "cpu_usage"
+          query: "rate(container_cpu_usage_seconds_total[5m])"
+          threshold: 0.8
+          
+        - name: "memory_usage"
+          query: "container_memory_working_set_bytes / container_spec_memory_limit_bytes"
+          threshold: 0.9
+    
+    # Notification configuration
+    notifications:
+      slack:
+        enabled: true
+        channels:
+          success: "#finbot-deployments"
+          failure: "#finbot-alerts"
+          rollback: "#finbot-critical"
+      
+      email:
+        enabled: true
+        recipients:
+          - "devops@finbot.com"
+          - "engineering@finbot.com"
+
+---
+# Deployment Scripts
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deployment-scripts
+  namespace: production
+data:
+  deploy.sh: |
+    #!/bin/bash
+    # Main deployment orchestration script
+    
+    set -e
+    
+    SERVICE_NAME=$1
+    NEW_IMAGE=$2
+    DEPLOYMENT_ID=$3
+    
+    echo "Starting deployment for $SERVICE_NAME with image $NEW_IMAGE"
+    
+    # Get current active color
+    CURRENT_COLOR=$(kubectl get service $SERVICE_NAME -o jsonpath='{.spec.selector.color}')
+    if [ "$CURRENT_COLOR" = "blue" ]; then
+        NEW_COLOR="green"
+    else
+        NEW_COLOR="blue"
+    fi
+    
+    echo "Current color: $CURRENT_COLOR, New color: $NEW_COLOR"
+    
+    # Update deployment with new image
+    kubectl set image deployment/$SERVICE_NAME-$NEW_COLOR $SERVICE_NAME=$NEW_IMAGE
+    
+    # Wait for rollout to complete
+    kubectl rollout status deployment/$SERVICE_NAME-$NEW_COLOR --timeout=600s
+    
+    # Run health checks
+    /scripts/health-check.sh $SERVICE_NAME $NEW_COLOR
+    
+    # Start canary deployment
+    /scripts/canary-deploy.sh $SERVICE_NAME $CURRENT_COLOR $NEW_COLOR
+    
+    echo "Deployment completed successfully"
+  
+  health-check.sh: |
+    #!/bin/bash
+    # Health check script for deployments
+    
+    set -e
+    
+    SERVICE_NAME=$1
+    COLOR=$2
+    TIMEOUT=${3:-300}
+    
+    echo "Running health checks for $SERVICE_NAME-$COLOR"
+    
+    # Get service configuration
+    PORT=$(kubectl get service $SERVICE_NAME -o jsonpath='{.spec.ports[0].port}')
+    HEALTH_ENDPOINT="/health"
+    
+    # Get pods for the deployment
+    PODS=$(kubectl get pods -l app=$SERVICE_NAME,color=$COLOR -o jsonpath='{.items[*].metadata.name}')
+    
+    for pod in $PODS; do
+        echo "Checking health of pod: $pod"
+        
+        # Wait for pod to be ready
+        kubectl wait --for=condition=Ready pod/$pod --timeout=${TIMEOUT}s
+        
+        # Check health endpoint
+        for i in {1..10}; do
+            if kubectl exec $pod -- curl -f http://localhost:$PORT$HEALTH_ENDPOINT; then
+                echo "Health check passed for $pod"
+                break
+            else
+                echo "Health check failed for $pod, attempt $i/10"
+                if [ $i -eq 10 ]; then
+                    echo "Health check failed after 10 attempts"
+                    exit 1
+                fi
+                sleep 10
+            fi
+        done
+    done
+    
+    echo "All health checks passed for $SERVICE_NAME-$COLOR"
+  
+  canary-deploy.sh: |
+    #!/bin/bash
+    # Canary deployment with gradual traffic shifting
+    
+    set -e
+    
+    SERVICE_NAME=$1
+    OLD_COLOR=$2
+    NEW_COLOR=$3
+    
+    echo "Starting canary deployment for $SERVICE_NAME: $OLD_COLOR -> $NEW_COLOR"
+    
+    # Canary stages: 5%, 25%, 50%, 100%
+    STAGES=(5 25 50 100)
+    STAGE_DURATION=300  # 5 minutes
+    
+    for stage in "${STAGES[@]}"; do
+        echo "Canary stage: ${stage}%"
+        
+        # Calculate weights
+        NEW_WEIGHT=$stage
+        OLD_WEIGHT=$((100 - stage))
+        
+        # Update traffic weights in VirtualService
+        kubectl patch virtualservice $SERVICE_NAME-traffic --type='json' -p="[
+          {\"op\": \"replace\", \"path\": \"/spec/http/1/route/0/weight\", \"value\": $OLD_WEIGHT},
+          {\"op\": \"replace\", \"path\": \"/spec/http/1/route/1/weight\", \"value\": $NEW_WEIGHT}
+        ]"
+        
+        echo "Traffic split updated: $OLD_COLOR=$OLD_WEIGHT%, $NEW_COLOR=$NEW_WEIGHT%"
+        
+        # Wait for stage duration (except for final stage)
+        if [ $stage -ne 100 ]; then
+            echo "Waiting ${STAGE_DURATION}s for stage to stabilize..."
+            sleep $STAGE_DURATION
+            
+            # Check metrics during canary
+            if ! /scripts/check-metrics.sh $SERVICE_NAME $NEW_COLOR; then
+                echo "Metrics check failed, rolling back..."
+                /scripts/rollback.sh $SERVICE_NAME $OLD_COLOR $NEW_COLOR
+                exit 1
+            fi
+        fi
+    done
+    
+    # Update service selector to point to new color
+    kubectl patch service $SERVICE_NAME -p '{"spec":{"selector":{"color":"'$NEW_COLOR'"}}}'
+    
+    echo "Canary deployment completed successfully"
+  
+  check-metrics.sh: |
+    #!/bin/bash
+    # Metrics validation script
+    
+    set -e
+    
+    SERVICE_NAME=$1
+    COLOR=$2
+    PROMETHEUS_URL=${PROMETHEUS_URL:-"http://prometheus.monitoring.svc.cluster.local:9090"}
+    
+    echo "Checking metrics for $SERVICE_NAME-$COLOR"
+    
+    # Check error rate
+    ERROR_RATE=$(curl -s "$PROMETHEUS_URL/api/v1/query?query=rate(http_requests_total{app=\"$SERVICE_NAME\",color=\"$COLOR\",code=~\"5..\"}[5m])/rate(http_requests_total{app=\"$SERVICE_NAME\",color=\"$COLOR\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+    
+    echo "Error rate: $ERROR_RATE"
+    if (( $(echo "$ERROR_RATE > 0.05" | bc -l) )); then
+        echo "ERROR: Error rate too high: $ERROR_RATE"
+        return 1
+    fi
+    
+    # Check P95 latency
+    LATENCY_P95=$(curl -s "$PROMETHEUS_URL/api/v1/query?query=histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{app=\"$SERVICE_NAME\",color=\"$COLOR\"}[5m]))" | jq -r '.data.result[0].value[1] // "0"')
+    
+    echo "P95 latency: ${LATENCY_P95}s"
+    if (( $(echo "$LATENCY_P95 > 5" | bc -l) )); then
+        echo "ERROR: P95 latency too high: ${LATENCY_P95}s"
+        return 1
+    fi
+    
+    # Check CPU usage
+    CPU_USAGE=$(curl -s "$PROMETHEUS_URL/api/v1/query?query=rate(container_cpu_usage_seconds_total{pod=~\"$SERVICE_NAME-$COLOR-.*\"}[5m])" | jq -r '.data.result[0].value[1] // "0"')
+    
+    echo "CPU usage: $CPU_USAGE"
+    if (( $(echo "$CPU_USAGE > 0.8" | bc -l) )); then
+        echo "WARNING: High CPU usage: $CPU_USAGE"
+    fi
+    
+    echo "All metrics checks passed"
+    return 0
+  
+  rollback.sh: |
+    #!/bin/bash
+    # Automatic rollback script
+    
+    set -e
+    
+    SERVICE_NAME=$1
+    OLD_COLOR=$2
+    NEW_COLOR=$3
+    
+    echo "ROLLBACK: Rolling back $SERVICE_NAME from $NEW_COLOR to $OLD_COLOR"
+    
+    # Immediately switch all traffic back to old version
+    kubectl patch virtualservice $SERVICE_NAME-traffic --type='json' -p="[
+      {\"op\": \"replace\", \"path\": \"/spec/http/1/route/0/weight\", \"value\": 100},
+      {\"op\": \"replace\", \"path\": \"/spec/http/1/route/1/weight\", \"value\": 0}
+    ]"
+    
+    # Update service selector
+    kubectl patch service $SERVICE_NAME -p '{"spec":{"selector":{"color":"'$OLD_COLOR'"}}}'
+    
+    # Scale down failed deployment
+    kubectl scale deployment $SERVICE_NAME-$NEW_COLOR --replicas=0
+    
+    # Send notification
+    curl -X POST $SLACK_WEBHOOK_URL -H 'Content-type: application/json' --data "{
+      \"text\": \"🚨 ROLLBACK: $SERVICE_NAME deployment rolled back from $NEW_COLOR to $OLD_COLOR\",
+      \"channel\": \"#finbot-critical\"
+    }"
+    
+    echo "Rollback completed"
+  
+  cleanup.sh: |
+    #!/bin/bash
+    # Cleanup old deployments and resources
+    
+    set -e
+    
+    SERVICE_NAME=$1
+    OLD_COLOR=$2
+    
+    echo "Cleaning up old deployment: $SERVICE_NAME-$OLD_COLOR"
+    
+    # Wait before cleanup to ensure stability
+    sleep 300
+    
+    # Scale down old deployment
+    kubectl scale deployment $SERVICE_NAME-$OLD_COLOR --replicas=0
+    
+    # Wait for pods to terminate
+    kubectl wait --for=delete pod -l app=$SERVICE_NAME,color=$OLD_COLOR --timeout=300s
+    
+    echo "Cleanup completed for $SERVICE_NAME-$OLD_COLOR"
+
+---
+# Deployment Automation Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: deployment-automation
+  namespace: production
+  labels:
+    app: deployment-automation
+spec:
+  selector:
+    app: deployment-automation
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+
+---
+# Deployment Webhook for External Triggers
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deployment-webhook
+  namespace: production
+  labels:
+    app: deployment-webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: deployment-webhook
+  template:
+    metadata:
+      labels:
+        app: deployment-webhook
+    spec:
+      serviceAccountName: deployment-automation
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: webhook
+        image: finbot/deployment-webhook:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: deployment-webhook-secret
+              key: secret
+        - name: DEPLOYMENT_AUTOMATION_URL
+          value: "http://deployment-automation:8080"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+
+---
+# Deployment Webhook Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: deployment-webhook
+  namespace: production
+  labels:
+    app: deployment-webhook
+spec:
+  selector:
+    app: deployment-webhook
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+---
+# Deployment Notifications Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: deployment-notifications
+  namespace: production
+spec:
+  refreshInterval: 3600s
+  secretStoreRef:
+    name: vault-backend
+    kind: SecretStore
+  target:
+    name: deployment-notifications
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        slack-webhook: "{{ .slack_webhook }}"
+        email-smtp-password: "{{ .email_smtp_password }}"
+  data:
+  - secretKey: slack_webhook
+    remoteRef:
+      key: finbot/integrations/slack
+      property: deployment_webhook
+  - secretKey: email_smtp_password
+    remoteRef:
+      key: finbot/integrations/smtp
+      property: password
+
+---
+# Deployment Webhook Secret
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: deployment-webhook-secret
+  namespace: production
+spec:
+  refreshInterval: 3600s
+  secretStoreRef:
+    name: vault-backend
+    kind: SecretStore
+  target:
+    name: deployment-webhook-secret
+    creationPolicy: Owner
+    template:
+      type: Opaque
+      data:
+        secret: "{{ .webhook_secret }}"
+  data:
+  - secretKey: webhook_secret
+    remoteRef:
+      key: finbot/deployment/webhook
+      property: secret

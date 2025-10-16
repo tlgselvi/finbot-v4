@@ -1,0 +1,575 @@
+# FinBot v4 - Health Checks and Monitoring
+# Comprehensive health checking and monitoring for ingress and applications
+
+---
+# Health Check Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-check-service
+  namespace: monitoring
+  labels:
+    app: health-check
+    component: monitoring
+spec:
+  selector:
+    app: health-check
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+
+---
+# Health Check Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-check
+  namespace: monitoring
+  labels:
+    app: health-check
+    component: monitoring
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-check
+  template:
+    metadata:
+      labels:
+        app: health-check
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: health-check
+      containers:
+      - name: health-check
+        image: prom/blackbox-exporter:v0.24.0
+        args:
+        - --config.file=/etc/blackbox_exporter/config.yml
+        - --web.listen-address=:9090
+        ports:
+        - name: http
+          containerPort: 9115
+        - name: metrics
+          containerPort: 9090
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: config
+          mountPath: /etc/blackbox_exporter
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 9090
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 9090
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      - name: health-monitor
+        image: curlimages/curl:8.4.0
+        command: ["/bin/sh"]
+        args:
+        - -c
+        - |
+          while true; do
+            # Check main application endpoints
+            echo "$(date): Checking application health..."
+            
+            # Check API health
+            if curl -f -s http://finbot-api.production.svc.cluster.local:3001/health > /dev/null; then
+              echo "API health: OK"
+            else
+              echo "API health: FAILED"
+            fi
+            
+            # Check web application health
+            if curl -f -s http://finbot-web.production.svc.cluster.local:3000/health > /dev/null; then
+              echo "Web health: OK"
+            else
+              echo "Web health: FAILED"
+            fi
+            
+            # Check database connectivity
+            if nc -z postgres-primary.database.svc.cluster.local 5432; then
+              echo "Database connectivity: OK"
+            else
+              echo "Database connectivity: FAILED"
+            fi
+            
+            # Check Redis connectivity
+            if nc -z redis-cluster.cache.svc.cluster.local 6379; then
+              echo "Redis connectivity: OK"
+            else
+              echo "Redis connectivity: FAILED"
+            fi
+            
+            sleep 30
+          done
+        resources:
+          requests:
+            cpu: 10m
+            memory: 16Mi
+          limits:
+            cpu: 50m
+            memory: 64Mi
+      volumes:
+      - name: config
+        configMap:
+          name: blackbox-config
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - health-check
+              topologyKey: kubernetes.io/hostname
+
+---
+# Blackbox Exporter Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blackbox-config
+  namespace: monitoring
+  labels:
+    app: health-check
+data:
+  config.yml: |
+    modules:
+      http_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+          valid_status_codes: []
+          method: GET
+          headers:
+            Host: finbot.com
+            Accept-Language: en-US
+          no_follow_redirects: false
+          fail_if_ssl: false
+          fail_if_not_ssl: false
+          tls_config:
+            insecure_skip_verify: false
+          preferred_ip_protocol: "ip4"
+      
+      http_post_2xx:
+        prober: http
+        timeout: 5s
+        http:
+          method: POST
+          headers:
+            Content-Type: application/json
+          body: '{"health": "check"}'
+          valid_status_codes: [200, 201]
+      
+      tcp_connect:
+        prober: tcp
+        timeout: 5s
+        tcp:
+          preferred_ip_protocol: "ip4"
+      
+      icmp:
+        prober: icmp
+        timeout: 5s
+        icmp:
+          preferred_ip_protocol: "ip4"
+      
+      dns:
+        prober: dns
+        timeout: 5s
+        dns:
+          query_name: "finbot.com"
+          query_type: "A"
+          valid_rcodes:
+          - NOERROR
+          validate_answer_rrs:
+            fail_if_matches_regexp:
+            - ".*127.0.0.1"
+            fail_if_not_matches_regexp:
+            - ".*"
+          validate_authority_rrs:
+            fail_if_matches_regexp:
+            - ".*127.0.0.1"
+          validate_additional_rrs:
+            fail_if_matches_regexp:
+            - ".*127.0.0.1"
+
+---
+# Service Account for Health Check
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: health-check
+  namespace: monitoring
+  labels:
+    app: health-check
+
+---
+# ClusterRole for Health Check
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: health-check
+  labels:
+    app: health-check
+rules:
+- apiGroups: [""]
+  resources: ["services", "endpoints", "pods"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding for Health Check
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: health-check
+  labels:
+    app: health-check
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: health-check
+subjects:
+- kind: ServiceAccount
+  name: health-check
+  namespace: monitoring
+
+---
+# Prometheus ServiceMonitor for Blackbox Exporter
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: blackbox-exporter
+  namespace: monitoring
+  labels:
+    app: health-check
+spec:
+  selector:
+    matchLabels:
+      app: health-check
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+
+---
+# Prometheus Configuration for Health Checks
+apiVersion: monitoring.coreos.com/v1
+kind: Prometheus
+metadata:
+  name: health-monitoring
+  namespace: monitoring
+  labels:
+    app: health-check
+spec:
+  replicas: 2
+  retention: 7d
+  serviceAccountName: prometheus
+  serviceMonitorSelector:
+    matchLabels:
+      app: health-check
+  ruleSelector:
+    matchLabels:
+      app: health-check
+  resources:
+    requests:
+      memory: 400Mi
+      cpu: 100m
+    limits:
+      memory: 2Gi
+      cpu: 1000m
+  storage:
+    volumeClaimTemplate:
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+        storageClassName: fast-ssd
+
+---
+# PrometheusRule for Health Check Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: health-check-alerts
+  namespace: monitoring
+  labels:
+    app: health-check
+spec:
+  groups:
+  - name: health-checks
+    rules:
+    # Application health checks
+    - alert: ApplicationDown
+      expr: probe_success{job="blackbox"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Application endpoint is down"
+        description: "{{ $labels.instance }} has been down for more than 1 minute"
+    
+    - alert: ApplicationHighLatency
+      expr: probe_duration_seconds{job="blackbox"} > 5
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Application response time is high"
+        description: "{{ $labels.instance }} response time is {{ $value }}s"
+    
+    - alert: SSLCertificateExpiry
+      expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 30
+      for: 1h
+      labels:
+        severity: warning
+      annotations:
+        summary: "SSL certificate expiring soon"
+        description: "SSL certificate for {{ $labels.instance }} expires in {{ $value }} days"
+    
+    - alert: SSLCertificateExpiryCritical
+      expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 7
+      for: 1h
+      labels:
+        severity: critical
+      annotations:
+        summary: "SSL certificate expiring very soon"
+        description: "SSL certificate for {{ $labels.instance }} expires in {{ $value }} days"
+    
+    # Database connectivity
+    - alert: DatabaseConnectionFailed
+      expr: probe_success{job="blackbox", module="tcp_connect", instance=~".*:5432"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Database connection failed"
+        description: "Cannot connect to database {{ $labels.instance }}"
+    
+    # Redis connectivity
+    - alert: RedisConnectionFailed
+      expr: probe_success{job="blackbox", module="tcp_connect", instance=~".*:6379"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Redis connection failed"
+        description: "Cannot connect to Redis {{ $labels.instance }}"
+    
+    # DNS resolution
+    - alert: DNSResolutionFailed
+      expr: probe_success{job="blackbox", module="dns"} == 0
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "DNS resolution failed"
+        description: "DNS resolution failed for {{ $labels.instance }}"
+    
+    # Ingress controller health
+    - alert: IngressControllerDown
+      expr: up{job="nginx-ingress-controller"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Ingress controller is down"
+        description: "NGINX Ingress controller {{ $labels.instance }} is down"
+    
+    - alert: IngressControllerHighMemory
+      expr: process_resident_memory_bytes{job="nginx-ingress-controller"} / 1024 / 1024 > 1000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Ingress controller high memory usage"
+        description: "NGINX Ingress controller {{ $labels.instance }} memory usage is {{ $value }}MB"
+
+---
+# CronJob for Periodic Health Checks
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: comprehensive-health-check
+  namespace: monitoring
+  labels:
+    app: health-check
+    component: cronjob
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: health-check
+            component: cronjob
+        spec:
+          serviceAccountName: health-check
+          restartPolicy: OnFailure
+          containers:
+          - name: health-checker
+            image: curlimages/curl:8.4.0
+            command: ["/bin/sh"]
+            args:
+            - -c
+            - |
+              #!/bin/sh
+              set -e
+              
+              echo "=== FinBot Health Check Report $(date) ==="
+              
+              # Function to check HTTP endpoint
+              check_http() {
+                local url=$1
+                local name=$2
+                local expected_code=${3:-200}
+                
+                echo -n "Checking $name ($url)... "
+                if response=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url"); then
+                  if [ "$response" = "$expected_code" ]; then
+                    echo "✅ OK ($response)"
+                    return 0
+                  else
+                    echo "❌ FAILED (HTTP $response)"
+                    return 1
+                  fi
+                else
+                  echo "❌ FAILED (No response)"
+                  return 1
+                fi
+              }
+              
+              # Function to check TCP port
+              check_tcp() {
+                local host=$1
+                local port=$2
+                local name=$3
+                
+                echo -n "Checking $name ($host:$port)... "
+                if nc -z -w5 "$host" "$port" 2>/dev/null; then
+                  echo "✅ OK"
+                  return 0
+                else
+                  echo "❌ FAILED"
+                  return 1
+                fi
+              }
+              
+              # Initialize counters
+              total_checks=0
+              failed_checks=0
+              
+              # Check external endpoints
+              echo "\n--- External Endpoints ---"
+              for endpoint in "https://finbot.com" "https://api.finbot.com/health" "https://app.finbot.com"; do
+                total_checks=$((total_checks + 1))
+                if ! check_http "$endpoint" "External $(echo $endpoint | cut -d'/' -f3)"; then
+                  failed_checks=$((failed_checks + 1))
+                fi
+              done
+              
+              # Check internal services
+              echo "\n--- Internal Services ---"
+              for service in "finbot-api.production.svc.cluster.local:3001" "finbot-web.production.svc.cluster.local:3000"; do
+                total_checks=$((total_checks + 1))
+                host=$(echo $service | cut -d':' -f1)
+                port=$(echo $service | cut -d':' -f2)
+                if ! check_tcp "$host" "$port" "Internal $host"; then
+                  failed_checks=$((failed_checks + 1))
+                fi
+              done
+              
+              # Check databases
+              echo "\n--- Databases ---"
+              for db in "postgres-primary.database.svc.cluster.local:5432" "redis-cluster.cache.svc.cluster.local:6379"; do
+                total_checks=$((total_checks + 1))
+                host=$(echo $db | cut -d':' -f1)
+                port=$(echo $db | cut -d':' -f2)
+                name=$(echo $host | cut -d'.' -f1)
+                if ! check_tcp "$host" "$port" "$name"; then
+                  failed_checks=$((failed_checks + 1))
+                fi
+              done
+              
+              # Check Kubernetes components
+              echo "\n--- Kubernetes Components ---"
+              total_checks=$((total_checks + 1))
+              if kubectl get nodes --no-headers | grep -q "Ready"; then
+                echo "Checking Kubernetes nodes... ✅ OK"
+              else
+                echo "Checking Kubernetes nodes... ❌ FAILED"
+                failed_checks=$((failed_checks + 1))
+              fi
+              
+              # Summary
+              echo "\n=== Summary ==="
+              echo "Total checks: $total_checks"
+              echo "Failed checks: $failed_checks"
+              echo "Success rate: $(( (total_checks - failed_checks) * 100 / total_checks ))%"
+              
+              if [ $failed_checks -gt 0 ]; then
+                echo "❌ Health check FAILED"
+                exit 1
+              else
+                echo "✅ All health checks PASSED"
+                exit 0
+              fi
+            resources:
+              requests:
+                cpu: 10m
+                memory: 16Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+          activeDeadlineSeconds: 300
+
+---
+# Service for Health Check Endpoints
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-endpoints
+  namespace: production
+  labels:
+    app: finbot
+    component: health
+spec:
+  selector:
+    app: finbot
+  ports:
+  - name: api-health
+    port: 3001
+    targetPort: 3001
+  - name: web-health
+    port: 3000
+    targetPort: 3000
+  type: ClusterIP

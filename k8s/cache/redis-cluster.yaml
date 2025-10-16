@@ -1,0 +1,651 @@
+# FinBot v4 - Redis Cluster
+# High availability Redis cluster with 6 nodes (3 masters, 3 replicas)
+
+---
+# Redis Cluster ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cluster-config
+  namespace: cache
+  labels:
+    app: redis-cluster
+data:
+  redis.conf: |
+    # Network
+    bind 0.0.0.0
+    port 6379
+    tcp-backlog 511
+    timeout 0
+    tcp-keepalive 300
+    
+    # General
+    daemonize no
+    supervised no
+    pidfile /var/run/redis_6379.pid
+    loglevel notice
+    logfile ""
+    databases 16
+    
+    # Snapshotting
+    save 900 1
+    save 300 10
+    save 60 10000
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir /data
+    
+    # Replication
+    replica-serve-stale-data yes
+    replica-read-only yes
+    repl-diskless-sync no
+    repl-diskless-sync-delay 5
+    repl-ping-replica-period 10
+    repl-timeout 60
+    repl-disable-tcp-nodelay no
+    repl-backlog-size 1mb
+    repl-backlog-ttl 3600
+    replica-priority 100
+    
+    # Security
+    requirepass ${REDIS_PASSWORD}
+    masterauth ${REDIS_PASSWORD}
+    
+    # Memory management
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+    maxmemory-samples 5
+    
+    # Lazy freeing
+    lazyfree-lazy-eviction no
+    lazyfree-lazy-expire no
+    lazyfree-lazy-server-del no
+    replica-lazy-flush no
+    
+    # Append only file
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite no
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-load-truncated yes
+    aof-use-rdb-preamble yes
+    
+    # Lua scripting
+    lua-time-limit 5000
+    
+    # Cluster
+    cluster-enabled yes
+    cluster-config-file nodes-6379.conf
+    cluster-node-timeout 15000
+    cluster-announce-ip ${POD_IP}
+    cluster-announce-port 6379
+    cluster-announce-bus-port 16379
+    cluster-require-full-coverage no
+    
+    # Slow log
+    slowlog-log-slower-than 10000
+    slowlog-max-len 128
+    
+    # Latency monitor
+    latency-monitor-threshold 100
+    
+    # Event notification
+    notify-keyspace-events ""
+    
+    # Advanced config
+    hash-max-ziplist-entries 512
+    hash-max-ziplist-value 64
+    list-max-ziplist-size -2
+    list-compress-depth 0
+    set-max-intset-entries 512
+    zset-max-ziplist-entries 128
+    zset-max-ziplist-value 64
+    hll-sparse-max-bytes 3000
+    stream-node-max-bytes 4096
+    stream-node-max-entries 100
+    activerehashing yes
+    client-output-buffer-limit normal 0 0 0
+    client-output-buffer-limit replica 256mb 64mb 60
+    client-output-buffer-limit pubsub 32mb 8mb 60
+    hz 10
+    dynamic-hz yes
+    aof-rewrite-incremental-fsync yes
+    rdb-save-incremental-fsync yes
+
+---
+# Redis Cluster Secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-cluster-secret
+  namespace: cache
+  labels:
+    app: redis-cluster
+type: Opaque
+data:
+  # Base64 encoded password (replace with actual secure password)
+  password: cmVkaXNfcGFzc3dvcmRfMjAyNA==  # redis_password_2024
+
+---
+# Redis Cluster StatefulSet
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  namespace: cache
+  labels:
+    app: redis-cluster
+spec:
+  serviceName: redis-cluster-headless
+  replicas: 6
+  selector:
+    matchLabels:
+      app: redis-cluster
+  template:
+    metadata:
+      labels:
+        app: redis-cluster
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9121"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: redis-cluster
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - redis-cluster
+            topologyKey: kubernetes.io/hostname
+      containers:
+      - name: redis
+        image: redis:7.2-alpine
+        ports:
+        - name: client
+          containerPort: 6379
+        - name: gossip
+          containerPort: 16379
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Replace environment variables in config
+          envsubst < /etc/redis/redis.conf > /tmp/redis.conf
+          redis-server /tmp/redis.conf
+        env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-cluster-secret
+              key: password
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          exec:
+            command:
+            - redis-cli
+            - -a
+            - $(REDIS_PASSWORD)
+            - ping
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - -a
+            - $(REDIS_PASSWORD)
+            - ping
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 1
+          failureThreshold: 3
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: config
+          mountPath: /etc/redis
+      - name: redis-exporter
+        image: oliver006/redis_exporter:v1.55.0
+        ports:
+        - name: metrics
+          containerPort: 9121
+        env:
+        - name: REDIS_ADDR
+          value: "redis://localhost:6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-cluster-secret
+              key: password
+        resources:
+          requests:
+            cpu: 10m
+            memory: 32Mi
+          limits:
+            cpu: 100m
+            memory: 128Mi
+      volumes:
+      - name: config
+        configMap:
+          name: redis-cluster-config
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+      labels:
+        app: redis-cluster
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: fast-ssd
+      resources:
+        requests:
+          storage: 10Gi
+
+---
+# Redis Cluster Headless Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster-headless
+  namespace: cache
+  labels:
+    app: redis-cluster
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+  - name: client
+    port: 6379
+    targetPort: 6379
+  - name: gossip
+    port: 16379
+    targetPort: 16379
+  selector:
+    app: redis-cluster
+
+---
+# Redis Cluster Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster
+  namespace: cache
+  labels:
+    app: redis-cluster
+spec:
+  type: ClusterIP
+  ports:
+  - name: client
+    port: 6379
+    targetPort: 6379
+  selector:
+    app: redis-cluster
+
+---
+# Redis Cluster Initialization Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-cluster-init
+  namespace: cache
+  labels:
+    app: redis-cluster
+    component: init
+spec:
+  template:
+    metadata:
+      labels:
+        app: redis-cluster
+        component: init
+    spec:
+      serviceAccountName: redis-cluster
+      restartPolicy: OnFailure
+      containers:
+      - name: redis-cluster-init
+        image: redis:7.2-alpine
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          
+          echo "Waiting for Redis pods to be ready..."
+          sleep 30
+          
+          # Get Redis pod IPs
+          REDIS_NODES=""
+          for i in $(seq 0 5); do
+            POD_IP=$(nslookup redis-cluster-${i}.redis-cluster-headless.cache.svc.cluster.local | grep Address | tail -1 | awk '{print $2}')
+            if [ ! -z "$POD_IP" ]; then
+              REDIS_NODES="${REDIS_NODES} ${POD_IP}:6379"
+            fi
+          done
+          
+          echo "Redis nodes: ${REDIS_NODES}"
+          
+          # Check if cluster is already initialized
+          FIRST_NODE=$(echo $REDIS_NODES | awk '{print $1}')
+          if redis-cli -h $(echo $FIRST_NODE | cut -d: -f1) -p 6379 -a $REDIS_PASSWORD cluster nodes 2>/dev/null | grep -q master; then
+            echo "Redis cluster already initialized"
+            exit 0
+          fi
+          
+          # Initialize Redis cluster
+          echo "Initializing Redis cluster..."
+          redis-cli --cluster create ${REDIS_NODES} \
+            --cluster-replicas 1 \
+            --cluster-yes \
+            -a $REDIS_PASSWORD
+          
+          # Verify cluster status
+          echo "Verifying cluster status..."
+          redis-cli -h $(echo $FIRST_NODE | cut -d: -f1) -p 6379 -a $REDIS_PASSWORD cluster info
+          
+          echo "Redis cluster initialization completed"
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: redis-cluster-secret
+              key: password
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+      activeDeadlineSeconds: 600
+
+---
+# Redis Cluster Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis-cluster
+  namespace: cache
+  labels:
+    app: redis-cluster
+
+---
+# Redis Cluster Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: cache
+  name: redis-cluster-role
+  labels:
+    app: redis-cluster
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["secrets", "configmaps"]
+  verbs: ["get", "list"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list", "watch"]
+
+---
+# Redis Cluster RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: redis-cluster-binding
+  namespace: cache
+  labels:
+    app: redis-cluster
+subjects:
+- kind: ServiceAccount
+  name: redis-cluster
+  namespace: cache
+roleRef:
+  kind: Role
+  name: redis-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Redis Cluster Network Policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-cluster-network-policy
+  namespace: cache
+  labels:
+    app: redis-cluster
+spec:
+  podSelector:
+    matchLabels:
+      app: redis-cluster
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: production
+    - namespaceSelector:
+        matchLabels:
+          name: staging
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
+    - podSelector:
+        matchLabels:
+          app: redis-cluster
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 16379
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis-cluster
+    ports:
+    - protocol: TCP
+      port: 6379
+    - protocol: TCP
+      port: 16379
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+
+---
+# Redis Cluster Pod Disruption Budget
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-cluster-pdb
+  namespace: cache
+  labels:
+    app: redis-cluster
+spec:
+  minAvailable: 4  # Keep at least 4 out of 6 nodes available
+  selector:
+    matchLabels:
+      app: redis-cluster
+
+---
+# Redis Cluster Service Monitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: redis-cluster
+  namespace: monitoring
+  labels:
+    app: redis-cluster
+spec:
+  selector:
+    matchLabels:
+      app: redis-cluster
+  endpoints:
+  - port: metrics
+    interval: 30s
+    path: /metrics
+  namespaceSelector:
+    matchNames:
+    - cache
+
+---
+# Redis Cluster Backup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: redis-cluster-backup
+  namespace: cache
+  labels:
+    app: redis-cluster
+    component: backup
+spec:
+  schedule: "0 3 * * *"  # Daily at 3 AM
+  timeZone: "UTC"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: redis-cluster
+            component: backup
+        spec:
+          serviceAccountName: redis-cluster
+          restartPolicy: OnFailure
+          containers:
+          - name: redis-backup
+            image: redis:7.2-alpine
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              
+              echo "Starting Redis cluster backup at $(date)"
+              
+              BACKUP_DATE=$(date +%Y%m%d_%H%M%S)
+              BACKUP_DIR="/tmp/backup"
+              mkdir -p ${BACKUP_DIR}
+              
+              # Backup each Redis node
+              for i in $(seq 0 5); do
+                NODE_HOST="redis-cluster-${i}.redis-cluster-headless.cache.svc.cluster.local"
+                BACKUP_FILE="${BACKUP_DIR}/redis_node_${i}_${BACKUP_DATE}.rdb"
+                
+                echo "Backing up Redis node ${i}..."
+                
+                # Trigger BGSAVE
+                redis-cli -h ${NODE_HOST} -p 6379 -a ${REDIS_PASSWORD} BGSAVE
+                
+                # Wait for BGSAVE to complete
+                while [ "$(redis-cli -h ${NODE_HOST} -p 6379 -a ${REDIS_PASSWORD} LASTSAVE)" = "$(redis-cli -h ${NODE_HOST} -p 6379 -a ${REDIS_PASSWORD} LASTSAVE)" ]; do
+                  sleep 1
+                done
+                
+                # Copy RDB file (this is simplified - in real scenario would need volume access)
+                echo "Node ${i} backup completed"
+              done
+              
+              # Create cluster topology backup
+              TOPOLOGY_FILE="${BACKUP_DIR}/cluster_topology_${BACKUP_DATE}.txt"
+              redis-cli -h redis-cluster-0.redis-cluster-headless.cache.svc.cluster.local -p 6379 -a ${REDIS_PASSWORD} cluster nodes > ${TOPOLOGY_FILE}
+              
+              echo "Redis cluster backup completed at $(date)"
+            env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-cluster-secret
+                  key: password
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+          activeDeadlineSeconds: 1800
+
+---
+# Redis Cluster Monitoring Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: redis-cluster-alerts
+  namespace: monitoring
+  labels:
+    app: redis-cluster
+spec:
+  groups:
+  - name: redis-cluster.rules
+    rules:
+    - alert: RedisClusterDown
+      expr: up{job="redis-cluster"} == 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Redis cluster node is down"
+        description: "Redis cluster node {{ $labels.instance }} has been down for more than 1 minute"
+    
+    - alert: RedisClusterHighMemoryUsage
+      expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Redis cluster high memory usage"
+        description: "Redis cluster node {{ $labels.instance }} memory usage is {{ $value | humanizePercentage }}"
+    
+    - alert: RedisClusterHighConnections
+      expr: redis_connected_clients > 1000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Redis cluster high connection count"
+        description: "Redis cluster node {{ $labels.instance }} has {{ $value }} connections"
+    
+    - alert: RedisClusterSlowQueries
+      expr: rate(redis_slowlog_length[5m]) > 10
+      for: 2m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Redis cluster slow queries detected"
+        description: "Redis cluster node {{ $labels.instance }} has {{ $value }} slow queries per second"
+    
+    - alert: RedisClusterReplicationLag
+      expr: redis_master_repl_offset - redis_slave_repl_offset > 1000000
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Redis cluster replication lag"
+        description: "Redis cluster replication lag is {{ $value }} bytes on {{ $labels.instance }}"

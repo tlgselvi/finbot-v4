@@ -1,0 +1,362 @@
+groups:
+  - name: performance.rules
+    rules:
+      # Core Web Vitals Alerts
+      - alert: HighFirstContentfulPaint
+        expr: lighthouse_first_contentful_paint > 2000
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          metric: first_contentful_paint
+        annotations:
+          summary: "First Contentful Paint is too high"
+          description: "First Contentful Paint is {{ $value }}ms, which exceeds the 2000ms threshold"
+          runbook_url: "https://web.dev/fcp/"
+
+      - alert: CriticalFirstContentfulPaint
+        expr: lighthouse_first_contentful_paint > 3000
+        for: 2m
+        labels:
+          severity: critical
+          component: frontend
+          metric: first_contentful_paint
+        annotations:
+          summary: "First Contentful Paint is critically high"
+          description: "First Contentful Paint is {{ $value }}ms, which is critically high (>3000ms)"
+          runbook_url: "https://web.dev/fcp/"
+
+      - alert: HighLargestContentfulPaint
+        expr: lighthouse_largest_contentful_paint > 2500
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          metric: largest_contentful_paint
+        annotations:
+          summary: "Largest Contentful Paint is too high"
+          description: "Largest Contentful Paint is {{ $value }}ms, which exceeds the 2500ms threshold"
+          runbook_url: "https://web.dev/lcp/"
+
+      - alert: CriticalLargestContentfulPaint
+        expr: lighthouse_largest_contentful_paint > 4000
+        for: 2m
+        labels:
+          severity: critical
+          component: frontend
+          metric: largest_contentful_paint
+        annotations:
+          summary: "Largest Contentful Paint is critically high"
+          description: "Largest Contentful Paint is {{ $value }}ms, which is critically high (>4000ms)"
+          runbook_url: "https://web.dev/lcp/"
+
+      - alert: HighCumulativeLayoutShift
+        expr: lighthouse_cumulative_layout_shift > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          metric: cumulative_layout_shift
+        annotations:
+          summary: "Cumulative Layout Shift is too high"
+          description: "Cumulative Layout Shift is {{ $value }}, which exceeds the 0.1 threshold"
+          runbook_url: "https://web.dev/cls/"
+
+      - alert: CriticalCumulativeLayoutShift
+        expr: lighthouse_cumulative_layout_shift > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          component: frontend
+          metric: cumulative_layout_shift
+        annotations:
+          summary: "Cumulative Layout Shift is critically high"
+          description: "Cumulative Layout Shift is {{ $value }}, which is critically high (>0.25)"
+          runbook_url: "https://web.dev/cls/"
+
+      - alert: HighFirstInputDelay
+        expr: lighthouse_first_input_delay > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          metric: first_input_delay
+        annotations:
+          summary: "First Input Delay is too high"
+          description: "First Input Delay is {{ $value }}ms, which exceeds the 100ms threshold"
+          runbook_url: "https://web.dev/fid/"
+
+      - alert: LowPerformanceScore
+        expr: lighthouse_performance_score < 90
+        for: 10m
+        labels:
+          severity: warning
+          component: frontend
+          metric: performance_score
+        annotations:
+          summary: "Lighthouse Performance Score is low"
+          description: "Lighthouse Performance Score is {{ $value }}, which is below the 90 threshold"
+          runbook_url: "https://web.dev/performance-scoring/"
+
+      - alert: CriticalPerformanceScore
+        expr: lighthouse_performance_score < 70
+        for: 5m
+        labels:
+          severity: critical
+          component: frontend
+          metric: performance_score
+        annotations:
+          summary: "Lighthouse Performance Score is critically low"
+          description: "Lighthouse Performance Score is {{ $value }}, which is critically low (<70)"
+          runbook_url: "https://web.dev/performance-scoring/"
+
+      # Bundle Size Alerts
+      - alert: LargeBundleSize
+        expr: bundle_size_total_kb > 2000
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          metric: bundle_size
+        annotations:
+          summary: "Bundle size is too large"
+          description: "Total bundle size is {{ $value }}KB, which exceeds the 2000KB threshold"
+          runbook_url: "https://web.dev/reduce-javascript-payloads-with-code-splitting/"
+
+      - alert: CriticalBundleSize
+        expr: bundle_size_total_kb > 3000
+        for: 2m
+        labels:
+          severity: critical
+          component: frontend
+          metric: bundle_size
+        annotations:
+          summary: "Bundle size is critically large"
+          description: "Total bundle size is {{ $value }}KB, which is critically large (>3000KB)"
+          runbook_url: "https://web.dev/reduce-javascript-payloads-with-code-splitting/"
+
+      - alert: LargeScriptBundle
+        expr: bundle_size_script_kb > 500
+        for: 5m
+        labels:
+          severity: warning
+          component: frontend
+          metric: script_bundle_size
+        annotations:
+          summary: "Script bundle size is too large"
+          description: "Script bundle size is {{ $value }}KB, which exceeds the 500KB threshold"
+
+      # API Performance Alerts
+      - alert: HighAPIResponseTime
+        expr: api_response_time_p95 > 2000
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+          metric: api_response_time
+        annotations:
+          summary: "API response time is high"
+          description: "95th percentile API response time is {{ $value }}ms, which exceeds the 2000ms threshold"
+
+      - alert: CriticalAPIResponseTime
+        expr: api_response_time_p95 > 5000
+        for: 2m
+        labels:
+          severity: critical
+          component: backend
+          metric: api_response_time
+        annotations:
+          summary: "API response time is critically high"
+          description: "95th percentile API response time is {{ $value }}ms, which is critically high (>5000ms)"
+
+      - alert: HighAPIErrorRate
+        expr: api_error_rate > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+          metric: api_error_rate
+        annotations:
+          summary: "API error rate is high"
+          description: "API error rate is {{ $value | humanizePercentage }}, which exceeds the 5% threshold"
+
+      - alert: CriticalAPIErrorRate
+        expr: api_error_rate > 0.10
+        for: 2m
+        labels:
+          severity: critical
+          component: backend
+          metric: api_error_rate
+        annotations:
+          summary: "API error rate is critically high"
+          description: "API error rate is {{ $value | humanizePercentage }}, which is critically high (>10%)"
+
+      - alert: LowAPIThroughput
+        expr: api_requests_per_second < 10
+        for: 10m
+        labels:
+          severity: warning
+          component: backend
+          metric: api_throughput
+        annotations:
+          summary: "API throughput is low"
+          description: "API throughput is {{ $value }} requests/second, which is below the 10 req/s threshold"
+
+      # Database Performance Alerts
+      - alert: HighDatabaseResponseTime
+        expr: database_query_duration_p95 > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+          metric: query_response_time
+        annotations:
+          summary: "Database query response time is high"
+          description: "95th percentile database query time is {{ $value }}ms, which exceeds the 1000ms threshold"
+
+      - alert: CriticalDatabaseResponseTime
+        expr: database_query_duration_p95 > 3000
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+          metric: query_response_time
+        annotations:
+          summary: "Database query response time is critically high"
+          description: "95th percentile database query time is {{ $value }}ms, which is critically high (>3000ms)"
+
+      - alert: HighDatabaseConnections
+        expr: database_active_connections > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+          metric: active_connections
+        annotations:
+          summary: "Database connection count is high"
+          description: "Active database connections: {{ $value }}, which exceeds the 80 connection threshold"
+
+      - alert: CriticalDatabaseConnections
+        expr: database_active_connections > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+          metric: active_connections
+        annotations:
+          summary: "Database connection count is critically high"
+          description: "Active database connections: {{ $value }}, which is critically high (>95)"
+
+      # Memory and CPU Alerts
+      - alert: HighMemoryUsage
+        expr: process_memory_usage_mb > 512
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+          metric: memory_usage
+        annotations:
+          summary: "Memory usage is high"
+          description: "Process memory usage is {{ $value }}MB, which exceeds the 512MB threshold"
+
+      - alert: CriticalMemoryUsage
+        expr: process_memory_usage_mb > 1024
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+          metric: memory_usage
+        annotations:
+          summary: "Memory usage is critically high"
+          description: "Process memory usage is {{ $value }}MB, which is critically high (>1024MB)"
+
+      - alert: HighCPUUsage
+        expr: process_cpu_usage_percent > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+          metric: cpu_usage
+        annotations:
+          summary: "CPU usage is high"
+          description: "Process CPU usage is {{ $value }}%, which exceeds the 80% threshold"
+
+      - alert: CriticalCPUUsage
+        expr: process_cpu_usage_percent > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+          metric: cpu_usage
+        annotations:
+          summary: "CPU usage is critically high"
+          description: "Process CPU usage is {{ $value }}%, which is critically high (>95%)"
+
+      # Performance Regression Alerts
+      - alert: PerformanceRegression
+        expr: increase(performance_regression_count[1h]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: performance
+          metric: regression
+        annotations:
+          summary: "Performance regression detected"
+          description: "{{ $value }} performance regressions detected in the last hour"
+
+      - alert: CriticalPerformanceRegression
+        expr: increase(critical_performance_regression_count[1h]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: performance
+          metric: regression
+        annotations:
+          summary: "Critical performance regression detected"
+          description: "{{ $value }} critical performance regressions detected in the last hour"
+
+      # Load Testing Alerts
+      - alert: LoadTestFailure
+        expr: load_test_success_rate < 0.95
+        for: 1m
+        labels:
+          severity: warning
+          component: performance
+          metric: load_test
+        annotations:
+          summary: "Load test success rate is low"
+          description: "Load test success rate is {{ $value | humanizePercentage }}, which is below the 95% threshold"
+
+      - alert: CriticalLoadTestFailure
+        expr: load_test_success_rate < 0.80
+        for: 1m
+        labels:
+          severity: critical
+          component: performance
+          metric: load_test
+        annotations:
+          summary: "Load test success rate is critically low"
+          description: "Load test success rate is {{ $value | humanizePercentage }}, which is critically low (<80%)"
+
+      # Cache Performance Alerts
+      - alert: LowCacheHitRate
+        expr: cache_hit_rate < 0.80
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+          metric: hit_rate
+        annotations:
+          summary: "Cache hit rate is low"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}, which is below the 80% threshold"
+
+      - alert: CriticalCacheHitRate
+        expr: cache_hit_rate < 0.60
+        for: 5m
+        labels:
+          severity: critical
+          component: cache
+          metric: hit_rate
+        annotations:
+          summary: "Cache hit rate is critically low"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}, which is critically low (<60%)"

@@ -1,0 +1,244 @@
+# FinBot v4 - Database Read Replicas Setup
+# Docker Compose configuration for PostgreSQL master-replica setup
+
+version: '3.8'
+
+services:
+  # PostgreSQL Master Database
+  postgres-master:
+    image: postgres:15-alpine
+    container_name: finbot-postgres-master
+    environment:
+      POSTGRES_DB: finbot_v4
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replication_password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-master-data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+      - ./database/postgresql-master.conf:/etc/postgresql/postgresql.conf
+      - ./database/pg_hba.conf:/etc/postgresql/pg_hba.conf
+    command: >
+      postgres 
+      -c config_file=/etc/postgresql/postgresql.conf
+      -c hba_file=/etc/postgresql/pg_hba.conf
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d finbot_v4"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "traefik.enable=false"
+
+  # PostgreSQL Read Replica 1 (Primary Region)
+  postgres-replica-1:
+    image: postgres:15-alpine
+    container_name: finbot-postgres-replica-1
+    environment:
+      POSTGRES_DB: finbot_v4
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_MASTER_HOST: postgres-master
+      POSTGRES_MASTER_PORT: 5432
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replication_password}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-replica-1-data:/var/lib/postgresql/data
+      - ./database/postgresql-replica.conf:/etc/postgresql/postgresql.conf
+      - ./database/setup-replica.sh:/docker-entrypoint-initdb.d/setup-replica.sh
+    command: >
+      bash -c "
+      if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Setting up replica...'
+        pg_basebackup -h postgres-master -D /var/lib/postgresql/data -U replicator -v -P -W
+        echo 'standby_mode = on' >> /var/lib/postgresql/data/recovery.conf
+        echo 'primary_conninfo = \"host=postgres-master port=5432 user=replicator\"' >> /var/lib/postgresql/data/recovery.conf
+        echo 'trigger_file = \"/tmp/postgresql.trigger\"' >> /var/lib/postgresql/data/recovery.conf
+      fi
+      postgres -c config_file=/etc/postgresql/postgresql.conf
+      "
+    depends_on:
+      - postgres-master
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d finbot_v4"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "replica.region=primary"
+      - "replica.priority=1"
+
+  # PostgreSQL Read Replica 2 (Secondary Region)
+  postgres-replica-2:
+    image: postgres:15-alpine
+    container_name: finbot-postgres-replica-2
+    environment:
+      POSTGRES_DB: finbot_v4
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_MASTER_HOST: postgres-master
+      POSTGRES_MASTER_PORT: 5432
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replication_password}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres-replica-2-data:/var/lib/postgresql/data
+      - ./database/postgresql-replica.conf:/etc/postgresql/postgresql.conf
+      - ./database/setup-replica.sh:/docker-entrypoint-initdb.d/setup-replica.sh
+    command: >
+      bash -c "
+      if [ ! -f /var/lib/postgresql/data/PG_VERSION ]; then
+        echo 'Setting up replica...'
+        pg_basebackup -h postgres-master -D /var/lib/postgresql/data -U replicator -v -P -W
+        echo 'standby_mode = on' >> /var/lib/postgresql/data/recovery.conf
+        echo 'primary_conninfo = \"host=postgres-master port=5432 user=replicator\"' >> /var/lib/postgresql/data/recovery.conf
+        echo 'trigger_file = \"/tmp/postgresql.trigger\"' >> /var/lib/postgresql/data/recovery.conf
+      fi
+      postgres -c config_file=/etc/postgresql/postgresql.conf
+      "
+    depends_on:
+      - postgres-master
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d finbot_v4"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    labels:
+      - "replica.region=secondary"
+      - "replica.priority=2"
+
+  # PgBouncer Connection Pooler for Master
+  pgbouncer-master:
+    image: pgbouncer/pgbouncer:latest
+    container_name: finbot-pgbouncer-master
+    environment:
+      DATABASES_HOST: postgres-master
+      DATABASES_PORT: 5432
+      DATABASES_USER: postgres
+      DATABASES_PASSWORD: ${DB_PASSWORD:-password}
+      DATABASES_DBNAME: finbot_v4
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 25
+    ports:
+      - "6432:5432"
+    depends_on:
+      - postgres-master
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    volumes:
+      - ./database/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini
+    labels:
+      - "pool.type=master"
+
+  # PgBouncer Connection Pooler for Replicas
+  pgbouncer-replica:
+    image: pgbouncer/pgbouncer:latest
+    container_name: finbot-pgbouncer-replica
+    environment:
+      DATABASES_HOST: postgres-replica-1
+      DATABASES_PORT: 5432
+      DATABASES_USER: postgres
+      DATABASES_PASSWORD: ${DB_PASSWORD:-password}
+      DATABASES_DBNAME: finbot_v4
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 1000
+      DEFAULT_POOL_SIZE: 20
+    ports:
+      - "6433:5432"
+    depends_on:
+      - postgres-replica-1
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    volumes:
+      - ./database/pgbouncer-replica.ini:/etc/pgbouncer/pgbouncer.ini
+    labels:
+      - "pool.type=replica"
+
+  # PostgreSQL Monitoring with pg_stat_statements
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: finbot-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://postgres:${DB_PASSWORD:-password}@postgres-master:5432/finbot_v4?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      - postgres-master
+    networks:
+      - finbot-network
+    restart: unless-stopped
+
+  # Replica Lag Monitor
+  replica-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.replica-monitor
+    container_name: finbot-replica-monitor
+    environment:
+      MASTER_HOST: postgres-master
+      MASTER_PORT: 5432
+      REPLICA_HOSTS: postgres-replica-1:5432,postgres-replica-2:5432
+      DB_USER: postgres
+      DB_PASSWORD: ${DB_PASSWORD:-password}
+      DB_NAME: finbot_v4
+      CHECK_INTERVAL: 10
+    depends_on:
+      - postgres-master
+      - postgres-replica-1
+      - postgres-replica-2
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/replica-lag:/app/monitoring
+
+  # HAProxy Load Balancer for Read Queries
+  haproxy-db:
+    image: haproxy:2.8-alpine
+    container_name: finbot-haproxy-db
+    ports:
+      - "5435:5432"  # Read queries load balancer
+      - "8404:8404"  # HAProxy stats
+    volumes:
+      - ./database/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      - postgres-replica-1
+      - postgres-replica-2
+    networks:
+      - finbot-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres-master-data:
+    driver: local
+  postgres-replica-1-data:
+    driver: local
+  postgres-replica-2-data:
+    driver: local
+
+networks:
+  finbot-network:
+    external: true

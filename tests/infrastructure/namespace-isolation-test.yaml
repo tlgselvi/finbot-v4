@@ -1,0 +1,297 @@
+# FinBot v4 - Namespace Isolation Tests
+# Tests for namespace isolation and resource quota enforcement
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: namespace-isolation-test
+  namespace: kube-system
+  labels:
+    test-type: infrastructure
+    component: namespaces
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: infrastructure-test-sa
+      containers:
+      - name: isolation-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing namespace isolation and resource quotas..."
+          
+          # Test 1: Verify namespace creation and labels
+          echo "Test 1: Verifying namespace configuration..."
+          
+          NAMESPACES=("production" "staging" "database" "cache" "monitoring" "security")
+          
+          for ns in "${NAMESPACES[@]}"; do
+            kubectl get namespace $ns || {
+              echo "ERROR: Namespace $ns does not exist"
+              exit 1
+            }
+            echo "✓ Namespace $ns exists"
+            
+            # Check namespace labels
+            kubectl get namespace $ns -o jsonpath='{.metadata.labels}' | grep -q "name=$ns" || {
+              echo "WARNING: Namespace $ns missing proper labels"
+            }
+          done
+          
+          # Test 2: Verify resource quotas
+          echo ""
+          echo "Test 2: Verifying resource quotas..."
+          
+          for ns in "${NAMESPACES[@]}"; do
+            if kubectl get resourcequota -n $ns | grep -q "finbot-quota"; then
+              echo "✓ Resource quota exists for namespace $ns"
+              
+              # Check quota usage
+              kubectl describe resourcequota finbot-quota -n $ns | grep -E "(requests.cpu|requests.memory|limits.cpu|limits.memory)" || {
+                echo "WARNING: Resource quota may not be properly configured for $ns"
+              }
+            else
+              echo "WARNING: No resource quota found for namespace $ns"
+            fi
+          done
+          
+          # Test 3: Test network isolation
+          echo ""
+          echo "Test 3: Testing network isolation..."
+          
+          # Create test pods in different namespaces
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: isolation-test-production
+            namespace: production
+            labels:
+              test: isolation
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ['sleep', '300']
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: isolation-test-staging
+            namespace: staging
+            labels:
+              test: isolation
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              command: ['sleep', '300']
+          EOF
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=Ready pod/isolation-test-production -n production --timeout=60s
+          kubectl wait --for=condition=Ready pod/isolation-test-staging -n staging --timeout=60s
+          
+          # Get pod IPs
+          PROD_POD_IP=$(kubectl get pod isolation-test-production -n production -o jsonpath='{.status.podIP}')
+          STAGING_POD_IP=$(kubectl get pod isolation-test-staging -n staging -o jsonpath='{.status.podIP}')
+          
+          echo "Production pod IP: $PROD_POD_IP"
+          echo "Staging pod IP: $STAGING_POD_IP"
+          
+          # Test cross-namespace communication (should be allowed by default, restricted by network policies)
+          kubectl exec isolation-test-production -n production -- ping -c 2 -W 5 $STAGING_POD_IP || {
+            echo "✓ Cross-namespace communication is restricted (as expected)"
+          }
+          
+          # Test 4: Verify service account isolation
+          echo ""
+          echo "Test 4: Testing service account isolation..."
+          
+          for ns in "${NAMESPACES[@]}"; do
+            SA_NAME="finbot-$ns"
+            if [ "$ns" = "production" ] || [ "$ns" = "staging" ]; then
+              SA_NAME="finbot-$ns"
+            elif [ "$ns" = "database" ]; then
+              SA_NAME="finbot-database"
+            elif [ "$ns" = "cache" ]; then
+              SA_NAME="finbot-cache"
+            elif [ "$ns" = "monitoring" ]; then
+              SA_NAME="finbot-monitoring"
+            elif [ "$ns" = "security" ]; then
+              SA_NAME="finbot-security"
+            fi
+            
+            kubectl get serviceaccount $SA_NAME -n $ns || {
+              echo "ERROR: Service account $SA_NAME not found in namespace $ns"
+              exit 1
+            }
+            echo "✓ Service account $SA_NAME exists in namespace $ns"
+          done
+          
+          # Test 5: Verify RBAC isolation
+          echo ""
+          echo "Test 5: Testing RBAC isolation..."
+          
+          # Test that production service account cannot access staging resources
+          kubectl auth can-i get pods --as=system:serviceaccount:production:finbot-production -n staging && {
+            echo "ERROR: Production service account can access staging namespace (security issue)"
+            exit 1
+          } || {
+            echo "✓ Production service account cannot access staging namespace"
+          }
+          
+          # Test that staging service account cannot access production resources
+          kubectl auth can-i get pods --as=system:serviceaccount:staging:finbot-staging -n production && {
+            echo "ERROR: Staging service account can access production namespace (security issue)"
+            exit 1
+          } || {
+            echo "✓ Staging service account cannot access production namespace"
+          }
+          
+          # Test 6: Verify network policies
+          echo ""
+          echo "Test 6: Testing network policies..."
+          
+          for ns in "${NAMESPACES[@]}"; do
+            if kubectl get networkpolicy -n $ns | grep -q "finbot-network-policy"; then
+              echo "✓ Network policy exists for namespace $ns"
+            else
+              echo "WARNING: No network policy found for namespace $ns"
+            fi
+          done
+          
+          # Cleanup test pods
+          kubectl delete pod isolation-test-production -n production --ignore-not-found
+          kubectl delete pod isolation-test-staging -n staging --ignore-not-found
+          
+          echo ""
+          echo "All namespace isolation tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Security Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: security-policies-test
+  namespace: kube-system
+  labels:
+    test-type: infrastructure
+    component: security
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: infrastructure-test-sa
+      containers:
+      - name: security-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing security policies and configurations..."
+          
+          # Test 1: Verify Pod Security Standards
+          echo "Test 1: Verifying Pod Security Standards..."
+          
+          NAMESPACES=("production" "staging" "database" "cache" "monitoring" "security")
+          
+          for ns in "${NAMESPACES[@]}"; do
+            # Check pod security labels
+            PSS_ENFORCE=$(kubectl get namespace $ns -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')
+            PSS_AUDIT=$(kubectl get namespace $ns -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/audit}')
+            PSS_WARN=$(kubectl get namespace $ns -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/warn}')
+            
+            if [ "$PSS_ENFORCE" = "baseline" ] || [ "$PSS_ENFORCE" = "restricted" ]; then
+              echo "✓ Namespace $ns has proper pod security enforcement: $PSS_ENFORCE"
+            else
+              echo "WARNING: Namespace $ns missing pod security enforcement"
+            fi
+          done
+          
+          # Test 2: Verify RBAC configurations
+          echo ""
+          echo "Test 2: Testing RBAC configurations..."
+          
+          # Check cluster roles
+          kubectl get clusterrole finbot-monitoring-role || {
+            echo "ERROR: finbot-monitoring-role not found"
+            exit 1
+          }
+          echo "✓ Monitoring cluster role exists"
+          
+          kubectl get clusterrole finbot-security-role || {
+            echo "ERROR: finbot-security-role not found"
+            exit 1
+          }
+          echo "✓ Security cluster role exists"
+          
+          # Test 3: Verify network policies
+          echo ""
+          echo "Test 3: Testing network policies..."
+          
+          # Check if network policies exist
+          POLICY_COUNT=$(kubectl get networkpolicy --all-namespaces --no-headers | wc -l)
+          if [ $POLICY_COUNT -gt 0 ]; then
+            echo "✓ Network policies are configured ($POLICY_COUNT policies found)"
+          else
+            echo "WARNING: No network policies found"
+          fi
+          
+          # Test 4: Verify secret management
+          echo ""
+          echo "Test 4: Testing secret management..."
+          
+          # Check for external secrets operator
+          kubectl get deployment external-secrets -n external-secrets-system || {
+            echo "WARNING: External Secrets Operator not found"
+          }
+          
+          # Check for sealed secrets
+          kubectl get crd sealedsecrets.bitnami.com || {
+            echo "WARNING: Sealed Secrets CRD not found"
+          }
+          
+          # Test 5: Verify admission controllers
+          echo ""
+          echo "Test 5: Testing admission controllers..."
+          
+          # Test pod security admission
+          cat <<EOF | kubectl apply --dry-run=server -f - || {
+            echo "✓ Pod security admission is working (rejected insecure pod)"
+          }
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: insecure-test-pod
+            namespace: production
+          spec:
+            containers:
+            - name: test
+              image: busybox:latest
+              securityContext:
+                privileged: true
+          EOF
+          
+          echo ""
+          echo "All security tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi

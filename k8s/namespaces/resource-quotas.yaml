@@ -1,0 +1,333 @@
+# FinBot v4 - Resource Quotas
+# Resource limits and quotas for each namespace
+
+---
+# Production Namespace Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    
+    # Storage Resources
+    requests.storage: 100Gi
+    persistentvolumeclaims: "10"
+    
+    # Object Counts
+    pods: "50"
+    services: "20"
+    secrets: "30"
+    configmaps: "30"
+    replicationcontrollers: "0"
+    deployments.apps: "20"
+    statefulsets.apps: "10"
+    jobs.batch: "10"
+    cronjobs.batch: "5"
+    
+    # Network Resources
+    services.nodeports: "5"
+    services.loadbalancers: "3"
+
+---
+# Production Namespace Limit Range
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 500m
+      memory: 512Mi
+    defaultRequest:
+      cpu: 100m
+      memory: 128Mi
+    max:
+      cpu: "2"
+      memory: 4Gi
+    min:
+      cpu: 50m
+      memory: 64Mi
+  - type: Pod
+    max:
+      cpu: "4"
+      memory: 8Gi
+    min:
+      cpu: 50m
+      memory: 64Mi
+  - type: PersistentVolumeClaim
+    max:
+      storage: 50Gi
+    min:
+      storage: 1Gi
+
+---
+# Staging Namespace Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: staging-quota
+  namespace: staging
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "4"
+    requests.memory: 8Gi
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    
+    # Storage Resources
+    requests.storage: 50Gi
+    persistentvolumeclaims: "5"
+    
+    # Object Counts
+    pods: "25"
+    services: "10"
+    secrets: "15"
+    configmaps: "15"
+    deployments.apps: "10"
+    statefulsets.apps: "5"
+    jobs.batch: "5"
+    cronjobs.batch: "3"
+
+---
+# Staging Namespace Limit Range
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: staging-limits
+  namespace: staging
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 250m
+      memory: 256Mi
+    defaultRequest:
+      cpu: 50m
+      memory: 64Mi
+    max:
+      cpu: "1"
+      memory: 2Gi
+    min:
+      cpu: 25m
+      memory: 32Mi
+  - type: Pod
+    max:
+      cpu: "2"
+      memory: 4Gi
+    min:
+      cpu: 25m
+      memory: 32Mi
+
+---
+# Database Namespace Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: database-quota
+  namespace: database
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "6"
+    requests.memory: 24Gi
+    limits.cpu: "12"
+    limits.memory: 48Gi
+    
+    # Storage Resources
+    requests.storage: 500Gi
+    persistentvolumeclaims: "20"
+    
+    # Object Counts
+    pods: "20"
+    services: "10"
+    secrets: "20"
+    configmaps: "20"
+    statefulsets.apps: "10"
+
+---
+# Database Namespace Limit Range
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: database-limits
+  namespace: database
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: "1"
+      memory: 2Gi
+    defaultRequest:
+      cpu: 250m
+      memory: 512Mi
+    max:
+      cpu: "4"
+      memory: 16Gi
+    min:
+      cpu: 100m
+      memory: 256Mi
+  - type: PersistentVolumeClaim
+    max:
+      storage: 100Gi
+    min:
+      storage: 5Gi
+
+---
+# Cache Namespace Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: cache-quota
+  namespace: cache
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "2"
+    requests.memory: 8Gi
+    limits.cpu: "4"
+    limits.memory: 16Gi
+    
+    # Storage Resources
+    requests.storage: 50Gi
+    persistentvolumeclaims: "10"
+    
+    # Object Counts
+    pods: "15"
+    services: "5"
+    secrets: "10"
+    configmaps: "10"
+    statefulsets.apps: "5"
+
+---
+# Cache Namespace Limit Range
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: cache-limits
+  namespace: cache
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 500m
+      memory: 1Gi
+    defaultRequest:
+      cpu: 100m
+      memory: 256Mi
+    max:
+      cpu: "1"
+      memory: 4Gi
+    min:
+      cpu: 50m
+      memory: 128Mi
+
+---
+# Monitoring Namespace Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: monitoring-quota
+  namespace: monitoring
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "4"
+    requests.memory: 16Gi
+    limits.cpu: "8"
+    limits.memory: 32Gi
+    
+    # Storage Resources
+    requests.storage: 200Gi
+    persistentvolumeclaims: "15"
+    
+    # Object Counts
+    pods: "30"
+    services: "15"
+    secrets: "25"
+    configmaps: "25"
+    deployments.apps: "15"
+    statefulsets.apps: "10"
+
+---
+# Monitoring Namespace Limit Range
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: monitoring-limits
+  namespace: monitoring
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 500m
+      memory: 1Gi
+    defaultRequest:
+      cpu: 100m
+      memory: 256Mi
+    max:
+      cpu: "2"
+      memory: 8Gi
+    min:
+      cpu: 50m
+      memory: 128Mi
+
+---
+# Security Namespace Resource Quota
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: security-quota
+  namespace: security
+spec:
+  hard:
+    # Compute Resources
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    
+    # Storage Resources
+    requests.storage: 20Gi
+    persistentvolumeclaims: "5"
+    
+    # Object Counts
+    pods: "10"
+    services: "5"
+    secrets: "15"
+    configmaps: "10"
+    deployments.apps: "5"
+    statefulsets.apps: "3"
+
+---
+# Security Namespace Limit Range
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: security-limits
+  namespace: security
+spec:
+  limits:
+  - type: Container
+    default:
+      cpu: 250m
+      memory: 512Mi
+    defaultRequest:
+      cpu: 50m
+      memory: 128Mi
+    max:
+      cpu: "1"
+      memory: 2Gi
+    min:
+      cpu: 25m
+      memory: 64Mi

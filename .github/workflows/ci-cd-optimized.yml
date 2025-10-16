@@ -1,0 +1,588 @@
+# FinBot v4 - Optimized CI/CD Pipeline
+# High-performance build and deployment with caching and parallel execution
+
+name: CI/CD Optimized Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+env:
+  NODE_VERSION: '18'
+  REGISTRY: ghcr.io
+  IMAGE_NAME: finbot-v4
+
+# Global job defaults
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ================================
+  # Setup and Cache Management
+  # ================================
+  setup:
+    name: Setup Dependencies
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.cache-keys.outputs.cache-key }}
+      client-cache-key: ${{ steps.cache-keys.outputs.client-cache-key }}
+      server-cache-key: ${{ steps.cache-keys.outputs.server-cache-key }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Generate cache keys
+        id: cache-keys
+        run: |
+          echo "cache-key=node-modules-${{ hashFiles('**/package-lock.json') }}" >> $GITHUB_OUTPUT
+          echo "client-cache-key=client-${{ hashFiles('QuickServeAPI/client/package-lock.json') }}" >> $GITHUB_OUTPUT
+          echo "server-cache-key=server-${{ hashFiles('QuickServeAPI/server/package-lock.json') }}" >> $GITHUB_OUTPUT
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            QuickServeAPI/node_modules
+            QuickServeAPI/client/node_modules
+          key: ${{ steps.cache-keys.outputs.cache-key }}
+          restore-keys: |
+            node-modules-
+
+      - name: Install dependencies
+        run: |
+          npm ci --prefer-offline --no-audit
+          cd QuickServeAPI && npm ci --prefer-offline --no-audit
+
+  # ================================
+  # Code Quality and Security
+  # ================================
+  quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      matrix:
+        check: [lint, typecheck, security, format]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            QuickServeAPI/node_modules
+            QuickServeAPI/client/node_modules
+          key: ${{ needs.setup.outputs.cache-key }}
+
+      - name: Run linting
+        if: matrix.check == 'lint'
+        run: |
+          npm run lint
+          cd QuickServeAPI && npm run lint
+
+      - name: Run type checking
+        if: matrix.check == 'typecheck'
+        run: |
+          cd QuickServeAPI && npm run type-check
+
+      - name: Run security audit
+        if: matrix.check == 'security'
+        run: |
+          npm audit --audit-level=high
+          cd QuickServeAPI && npm audit --audit-level=high
+
+      - name: Check formatting
+        if: matrix.check == 'format'
+        run: |
+          npm run format:check
+          cd QuickServeAPI && npm run format:check
+
+  # ================================
+  # Testing
+  # ================================
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      matrix:
+        test-type: [unit, integration, e2e]
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: finbot_v4_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            QuickServeAPI/node_modules
+            QuickServeAPI/client/node_modules
+          key: ${{ needs.setup.outputs.cache-key }}
+
+      - name: Setup test database
+        run: |
+          cd QuickServeAPI
+          npm run db:migrate:test
+          npm run db:seed:test
+
+      - name: Run unit tests
+        if: matrix.test-type == 'unit'
+        run: |
+          cd QuickServeAPI
+          npm run test:unit -- --coverage --watchAll=false
+        env:
+          CI: true
+          NODE_ENV: test
+
+      - name: Run integration tests
+        if: matrix.test-type == 'integration'
+        run: |
+          cd QuickServeAPI
+          npm run test:integration -- --watchAll=false
+        env:
+          CI: true
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:test_password@localhost:5432/finbot_v4_test
+
+      - name: Run E2E tests
+        if: matrix.test-type == 'e2e'
+        run: |
+          cd QuickServeAPI
+          npm run test:e2e
+        env:
+          CI: true
+          NODE_ENV: test
+
+      - name: Upload coverage reports
+        if: matrix.test-type == 'unit'
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./QuickServeAPI/coverage/lcov.info
+          flags: unittests
+          name: codecov-umbrella
+
+  # ================================
+  # Performance Testing
+  # ================================
+  performance:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: [setup, quality, test]
+    if: always() && (needs.quality.result == 'success' && needs.test.result == 'success')
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: finbot_v4_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            QuickServeAPI/node_modules
+            QuickServeAPI/client/node_modules
+          key: ${{ needs.setup.outputs.cache-key }}
+
+      - name: Install k6
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Setup test database
+        run: |
+          cd QuickServeAPI
+          npm run db:migrate:test
+          npm run db:seed:test
+
+      - name: Build application
+        run: |
+          cd QuickServeAPI/client
+          npm run build
+
+      - name: Run bundle size analysis
+        run: |
+          node scripts/bundle-size-monitor.js
+        continue-on-error: true
+
+      - name: Run performance test suite
+        run: |
+          node scripts/run-performance-tests.js --parallel
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:test_password@localhost:5432/finbot_v4_test
+        timeout-minutes: 20
+
+      - name: Upload performance reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: performance-reports-${{ github.run_number }}
+          path: |
+            tests/performance/results/
+            tests/performance/reports/
+            tests/performance/bundle-reports/
+          retention-days: 30
+
+      - name: Comment performance results on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Find latest performance report
+            const reportsDir = 'tests/performance/reports';
+            if (fs.existsSync(reportsDir)) {
+              const files = fs.readdirSync(reportsDir)
+                .filter(f => f.startsWith('performance-report-'))
+                .sort()
+                .reverse();
+              
+              if (files.length > 0) {
+                const reportPath = path.join(reportsDir, files[0]);
+                const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+                
+                const comment = `## 📊 Performance Test Results
+                
+                **Summary:**
+                - Total Tests: ${report.totalTests}
+                - Passed: ✅ ${report.passedTests}
+                - Failed: ❌ ${report.failedTests}
+                - Success Rate: ${((report.passedTests / report.totalTests) * 100).toFixed(1)}%
+                - Duration: ${(report.totalDuration / 1000 / 60).toFixed(1)} minutes
+                
+                **Test Results:**
+                ${report.results.map(r => `- ${r.status === 'passed' ? '✅' : '❌'} ${r.name}: ${(r.duration / 1000).toFixed(1)}s`).join('\n')}
+                
+                ${report.failedTests > 0 ? '⚠️ Some performance tests failed. Please review the detailed reports.' : '🎉 All performance tests passed!'}
+                `;
+                
+                github.rest.issues.createComment({
+                  issue_number: context.issue.number,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  body: comment
+                });
+              }
+            }
+
+  # ================================
+  # Build Optimization
+  # ================================
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    needs: [setup, quality, test, performance]
+    if: always() && (needs.quality.result == 'success' && needs.test.result == 'success' && needs.performance.result == 'success')
+    strategy:
+      matrix:
+        target: [client, server]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Restore dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.npm
+            node_modules
+            QuickServeAPI/node_modules
+            QuickServeAPI/client/node_modules
+          key: ${{ needs.setup.outputs.cache-key }}
+
+      - name: Build client
+        if: matrix.target == 'client'
+        run: |
+          cd QuickServeAPI/client
+          npm run build
+          npm run optimize:assets
+        env:
+          NODE_ENV: production
+          GENERATE_SOURCEMAP: false
+          INLINE_RUNTIME_CHUNK: false
+
+      - name: Build server
+        if: matrix.target == 'server'
+        run: |
+          cd QuickServeAPI
+          npm run build
+        env:
+          NODE_ENV: production
+
+      - name: Cache build artifacts
+        uses: actions/cache@v3
+        with:
+          path: |
+            QuickServeAPI/client/build
+            QuickServeAPI/dist
+          key: build-${{ matrix.target }}-${{ github.sha }}
+
+      - name: Analyze bundle size
+        if: matrix.target == 'client'
+        run: |
+          cd QuickServeAPI/client
+          npm run analyze:bundle
+          
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.target }}-build
+          path: |
+            QuickServeAPI/client/build
+            QuickServeAPI/dist
+          retention-days: 7
+
+  # ================================
+  # Docker Build with Multi-stage Optimization
+  # ================================
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [build]
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            network=host
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.optimized
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            NODE_VERSION=18-alpine
+            BUILDKIT_INLINE_CACHE=1
+
+  # ================================
+  # Performance Testing
+  # ================================
+  performance:
+    name: Performance Tests
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install performance testing tools
+        run: |
+          npm install -g lighthouse-ci @lhci/cli
+          npm install -g artillery
+
+      - name: Start application
+        run: |
+          docker-compose -f docker-compose.production.yml up -d
+          sleep 30
+
+      - name: Run Lighthouse CI
+        run: |
+          lhci autorun
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      - name: Run load tests
+        run: |
+          artillery run tests/performance/load-test.yml
+
+      - name: Upload performance results
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-results
+          path: |
+            .lighthouseci
+            tests/performance/results
+
+  # ================================
+  # Security Scanning
+  # ================================
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ================================
+  # Deployment
+  # ================================
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [docker-build, performance, security-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to production
+        run: |
+          echo "Deploying to production..."
+          # Add your deployment logic here
+          # This could be Kubernetes, Docker Swarm, or cloud provider specific
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests..."
+          # Add smoke tests to verify deployment
+
+      - name: Notify deployment
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#deployments'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+
+  # ================================
+  # Cleanup
+  # ================================
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    steps:
+      - name: Clean up old artifacts
+        run: |
+          echo "Cleaning up old build artifacts..."
+          # Add cleanup logic for old Docker images, artifacts, etc.

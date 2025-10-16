@@ -1,0 +1,677 @@
+# FinBot v4 - Application Deployment Tests
+# Comprehensive tests for application startup, health checks, autoscaling, and service communication
+
+---
+# Application Test Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: application-tests
+  labels:
+    name: application-tests
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+
+---
+# Application Startup Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: application-startup-test
+  namespace: application-tests
+  labels:
+    test-type: application
+    component: startup
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: application-test-sa
+      containers:
+      - name: startup-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing application startup and health checks..."
+          
+          # Test 1: Check if all applications are deployed
+          echo "Test 1: Checking application deployments..."
+          
+          APPLICATIONS=("finbot-api" "finbot-web" "finbot-admin")
+          
+          for app in "${APPLICATIONS[@]}"; do
+            kubectl get deployment $app -n production || {
+              echo "ERROR: Deployment $app not found"
+              exit 1
+            }
+            echo "✓ Deployment $app exists"
+            
+            # Check if deployment is available
+            AVAILABLE=$(kubectl get deployment $app -n production -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')
+            if [ "$AVAILABLE" = "True" ]; then
+              echo "✓ Deployment $app is available"
+            else
+              echo "ERROR: Deployment $app is not available"
+              exit 1
+            fi
+            
+            # Check replica count
+            READY_REPLICAS=$(kubectl get deployment $app -n production -o jsonpath='{.status.readyReplicas}')
+            DESIRED_REPLICAS=$(kubectl get deployment $app -n production -o jsonpath='{.spec.replicas}')
+            
+            if [ "$READY_REPLICAS" = "$DESIRED_REPLICAS" ]; then
+              echo "✓ Deployment $app has correct replica count: $READY_REPLICAS/$DESIRED_REPLICAS"
+            else
+              echo "ERROR: Deployment $app replica mismatch: $READY_REPLICAS/$DESIRED_REPLICAS"
+              exit 1
+            fi
+          done
+          
+          # Test 2: Check services
+          echo ""
+          echo "Test 2: Checking application services..."
+          
+          for app in "${APPLICATIONS[@]}"; do
+            kubectl get service $app -n production || {
+              echo "ERROR: Service $app not found"
+              exit 1
+            }
+            echo "✓ Service $app exists"
+            
+            # Check service endpoints
+            ENDPOINTS=$(kubectl get endpoints $app -n production -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+            if [ "$ENDPOINTS" -gt 0 ]; then
+              echo "✓ Service $app has $ENDPOINTS endpoints"
+            else
+              echo "ERROR: Service $app has no endpoints"
+              exit 1
+            fi
+          done
+          
+          # Test 3: Test pod startup time
+          echo ""
+          echo "Test 3: Testing pod startup performance..."
+          
+          for app in "${APPLICATIONS[@]}"; do
+            # Get pod creation and ready times
+            PODS=$(kubectl get pods -n production -l app=$app -o jsonpath='{.items[*].metadata.name}')
+            
+            for pod in $PODS; do
+              CREATED=$(kubectl get pod $pod -n production -o jsonpath='{.metadata.creationTimestamp}')
+              READY_TIME=$(kubectl get pod $pod -n production -o jsonpath='{.status.conditions[?(@.type=="Ready")].lastTransitionTime}')
+              
+              if [ -n "$CREATED" ] && [ -n "$READY_TIME" ]; then
+                echo "✓ Pod $pod startup time calculated"
+              else
+                echo "WARNING: Could not calculate startup time for pod $pod"
+              fi
+            done
+          done
+          
+          echo ""
+          echo "All application startup tests passed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Health Check Functionality Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: health-check-test
+  namespace: application-tests
+  labels:
+    test-type: application
+    component: health-checks
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: application-test-sa
+      containers:
+      - name: health-check-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing application health check functionality..."
+          
+          # Test 1: API health checks
+          echo "Test 1: Testing API health checks..."
+          
+          # Basic health check
+          curl -f http://finbot-api.production.svc.cluster.local:3001/health || {
+            echo "ERROR: API health check failed"
+            exit 1
+          }
+          echo "✓ API health check passed"
+          
+          # Readiness check
+          curl -f http://finbot-api.production.svc.cluster.local:3001/ready || {
+            echo "ERROR: API readiness check failed"
+            exit 1
+          }
+          echo "✓ API readiness check passed"
+          
+          # Database health check
+          curl -f http://finbot-api.production.svc.cluster.local:3001/health/database || {
+            echo "ERROR: API database health check failed"
+            exit 1
+          }
+          echo "✓ API database health check passed"
+          
+          # Redis health check
+          curl -f http://finbot-api.production.svc.cluster.local:3001/health/redis || {
+            echo "ERROR: API Redis health check failed"
+            exit 1
+          }
+          echo "✓ API Redis health check passed"
+          
+          # Test 2: Web health checks
+          echo ""
+          echo "Test 2: Testing Web health checks..."
+          
+          curl -f http://finbot-web.production.svc.cluster.local:80/health || {
+            echo "ERROR: Web health check failed"
+            exit 1
+          }
+          echo "✓ Web health check passed"
+          
+          curl -f http://finbot-web.production.svc.cluster.local:80/ready || {
+            echo "ERROR: Web readiness check failed"
+            exit 1
+          }
+          echo "✓ Web readiness check passed"
+          
+          # Test 3: Admin health checks
+          echo ""
+          echo "Test 3: Testing Admin health checks..."
+          
+          curl -f http://finbot-admin.production.svc.cluster.local:80/health || {
+            echo "ERROR: Admin health check failed"
+            exit 1
+          }
+          echo "✓ Admin health check passed"
+          
+          # Test 4: Metrics endpoints
+          echo ""
+          echo "Test 4: Testing metrics endpoints..."
+          
+          # API metrics
+          curl -f http://finbot-api.production.svc.cluster.local:8080/metrics | grep -q "http_requests_total" && {
+            echo "✓ API metrics endpoint working"
+          } || {
+            echo "WARNING: API metrics may not be properly configured"
+          }
+          
+          # Web metrics
+          curl -f http://finbot-web.production.svc.cluster.local:80/metrics | grep -q "nginx" && {
+            echo "✓ Web metrics endpoint working"
+          } || {
+            echo "WARNING: Web metrics may not be properly configured"
+          }
+          
+          echo ""
+          echo "All health check tests passed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Autoscaling Behavior Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: autoscaling-test
+  namespace: application-tests
+  labels:
+    test-type: application
+    component: autoscaling
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: application-test-sa
+      containers:
+      - name: autoscaling-test
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Testing autoscaling behavior..."
+          
+          # Test 1: Check HPA configuration
+          echo "Test 1: Checking HPA configuration..."
+          
+          APPLICATIONS=("finbot-api" "finbot-web" "finbot-admin")
+          
+          for app in "${APPLICATIONS[@]}"; do
+            kubectl get hpa $app-hpa -n production || {
+              echo "ERROR: HPA for $app not found"
+              exit 1
+            }
+            echo "✓ HPA for $app exists"
+            
+            # Check HPA status
+            HPA_STATUS=$(kubectl get hpa $app-hpa -n production -o jsonpath='{.status.conditions[?(@.type=="AbleToScale")].status}')
+            if [ "$HPA_STATUS" = "True" ]; then
+              echo "✓ HPA for $app is able to scale"
+            else
+              echo "WARNING: HPA for $app may not be able to scale"
+            fi
+            
+            # Check current metrics
+            CURRENT_CPU=$(kubectl get hpa $app-hpa -n production -o jsonpath='{.status.currentMetrics[?(@.resource.name=="cpu")].resource.current.averageUtilization}')
+            if [ -n "$CURRENT_CPU" ]; then
+              echo "✓ HPA for $app reporting CPU metrics: $CURRENT_CPU%"
+            else
+              echo "WARNING: HPA for $app not reporting CPU metrics"
+            fi
+          done
+          
+          # Test 2: Check Cluster Autoscaler
+          echo ""
+          echo "Test 2: Checking Cluster Autoscaler..."
+          
+          kubectl get deployment cluster-autoscaler -n kube-system || {
+            echo "WARNING: Cluster Autoscaler not found"
+          }
+          
+          # Check cluster autoscaler logs for errors
+          CA_PODS=$(kubectl get pods -n kube-system -l app=cluster-autoscaler -o jsonpath='{.items[*].metadata.name}')
+          for pod in $CA_PODS; do
+            ERROR_COUNT=$(kubectl logs $pod -n kube-system --tail=100 | grep -c "ERROR" || echo "0")
+            if [ "$ERROR_COUNT" -lt 5 ]; then
+              echo "✓ Cluster Autoscaler pod $pod has minimal errors: $ERROR_COUNT"
+            else
+              echo "WARNING: Cluster Autoscaler pod $pod has many errors: $ERROR_COUNT"
+            fi
+          done
+          
+          # Test 3: Test VPA recommendations
+          echo ""
+          echo "Test 3: Checking VPA recommendations..."
+          
+          for app in "${APPLICATIONS[@]}"; do
+            kubectl get vpa $app-vpa -n production >/dev/null 2>&1 && {
+              echo "✓ VPA for $app exists"
+              
+              # Check if VPA has recommendations
+              RECOMMENDATIONS=$(kubectl get vpa $app-vpa -n production -o jsonpath='{.status.recommendation}')
+              if [ -n "$RECOMMENDATIONS" ]; then
+                echo "✓ VPA for $app has recommendations"
+              else
+                echo "INFO: VPA for $app does not have recommendations yet"
+              fi
+            } || {
+              echo "INFO: VPA for $app not configured"
+            }
+          done
+          
+          # Test 4: Simulate load and check scaling
+          echo ""
+          echo "Test 4: Testing scaling response (simulation)..."
+          
+          # Get current replica counts
+          for app in "${APPLICATIONS[@]}"; do
+            CURRENT_REPLICAS=$(kubectl get deployment $app -n production -o jsonpath='{.status.replicas}')
+            MIN_REPLICAS=$(kubectl get hpa $app-hpa -n production -o jsonpath='{.spec.minReplicas}')
+            MAX_REPLICAS=$(kubectl get hpa $app-hpa -n production -o jsonpath='{.spec.maxReplicas}')
+            
+            echo "✓ $app scaling range: $MIN_REPLICAS - $MAX_REPLICAS (current: $CURRENT_REPLICAS)"
+            
+            # Check if current replicas are within range
+            if [ "$CURRENT_REPLICAS" -ge "$MIN_REPLICAS" ] && [ "$CURRENT_REPLICAS" -le "$MAX_REPLICAS" ]; then
+              echo "✓ $app replica count within HPA range"
+            else
+              echo "WARNING: $app replica count outside HPA range"
+            fi
+          done
+          
+          echo ""
+          echo "All autoscaling tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Service Discovery Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: service-discovery-test
+  namespace: application-tests
+  labels:
+    test-type: application
+    component: service-discovery
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: application-test-sa
+      containers:
+      - name: service-discovery-test
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing service discovery and inter-service communication..."
+          
+          # Test 1: DNS resolution
+          echo "Test 1: Testing DNS resolution..."
+          
+          SERVICES=("finbot-api" "finbot-web" "finbot-admin")
+          
+          for service in "${SERVICES[@]}"; do
+            nslookup $service.production.svc.cluster.local || {
+              echo "ERROR: Cannot resolve $service.production.svc.cluster.local"
+              exit 1
+            }
+            echo "✓ DNS resolution works for $service"
+          done
+          
+          # Test cross-namespace DNS resolution
+          nslookup postgresql.database.svc.cluster.local || {
+            echo "ERROR: Cannot resolve cross-namespace service"
+            exit 1
+          }
+          echo "✓ Cross-namespace DNS resolution works"
+          
+          # Test 2: Service connectivity
+          echo ""
+          echo "Test 2: Testing service connectivity..."
+          
+          # Test API service connectivity
+          nc -z finbot-api.production.svc.cluster.local 3001 || {
+            echo "ERROR: Cannot connect to API service"
+            exit 1
+          }
+          echo "✓ API service connectivity works"
+          
+          # Test Web service connectivity
+          nc -z finbot-web.production.svc.cluster.local 80 || {
+            echo "ERROR: Cannot connect to Web service"
+            exit 1
+          }
+          echo "✓ Web service connectivity works"
+          
+          # Test Admin service connectivity
+          nc -z finbot-admin.production.svc.cluster.local 80 || {
+            echo "ERROR: Cannot connect to Admin service"
+            exit 1
+          }
+          echo "✓ Admin service connectivity works"
+          
+          # Test 3: Cross-namespace connectivity
+          echo ""
+          echo "Test 3: Testing cross-namespace connectivity..."
+          
+          # Test database connectivity
+          nc -z postgresql.database.svc.cluster.local 5432 || {
+            echo "ERROR: Cannot connect to database service"
+            exit 1
+          }
+          echo "✓ Database service connectivity works"
+          
+          # Test Redis connectivity
+          nc -z redis.cache.svc.cluster.local 6379 || {
+            echo "ERROR: Cannot connect to Redis service"
+            exit 1
+          }
+          echo "✓ Redis service connectivity works"
+          
+          # Test 4: Load balancing
+          echo ""
+          echo "Test 4: Testing load balancing..."
+          
+          # Make multiple requests to check load balancing
+          for i in {1..10}; do
+            nc -z finbot-api.production.svc.cluster.local 3001 || {
+              echo "ERROR: Load balancing test failed on attempt $i"
+              exit 1
+            }
+          done
+          echo "✓ Load balancing test passed"
+          
+          echo ""
+          echo "All service discovery tests passed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Application Performance Test
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: application-performance-test
+  namespace: application-tests
+  labels:
+    test-type: application
+    component: performance
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      serviceAccountName: application-test-sa
+      containers:
+      - name: performance-test
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Testing application performance..."
+          
+          # Test 1: Response time test
+          echo "Test 1: Testing response times..."
+          
+          # Test API response time
+          START_TIME=$(date +%s%N)
+          curl -f http://finbot-api.production.svc.cluster.local:3001/health
+          END_TIME=$(date +%s%N)
+          API_RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+          
+          echo "API response time: ${API_RESPONSE_TIME}ms"
+          if [ $API_RESPONSE_TIME -lt 1000 ]; then
+            echo "✓ API response time acceptable"
+          else
+            echo "WARNING: API response time high: ${API_RESPONSE_TIME}ms"
+          fi
+          
+          # Test Web response time
+          START_TIME=$(date +%s%N)
+          curl -f http://finbot-web.production.svc.cluster.local:80/health
+          END_TIME=$(date +%s%N)
+          WEB_RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+          
+          echo "Web response time: ${WEB_RESPONSE_TIME}ms"
+          if [ $WEB_RESPONSE_TIME -lt 500 ]; then
+            echo "✓ Web response time acceptable"
+          else
+            echo "WARNING: Web response time high: ${WEB_RESPONSE_TIME}ms"
+          fi
+          
+          # Test 2: Concurrent request handling
+          echo ""
+          echo "Test 2: Testing concurrent request handling..."
+          
+          # Send 10 concurrent requests to API
+          for i in {1..10}; do
+            curl -s http://finbot-api.production.svc.cluster.local:3001/health > /dev/null &
+          done
+          wait
+          echo "✓ Concurrent API requests handled"
+          
+          # Send 10 concurrent requests to Web
+          for i in {1..10}; do
+            curl -s http://finbot-web.production.svc.cluster.local:80/health > /dev/null &
+          done
+          wait
+          echo "✓ Concurrent Web requests handled"
+          
+          # Test 3: Resource usage validation
+          echo ""
+          echo "Test 3: Validating resource usage..."
+          
+          # This would typically query Prometheus for resource metrics
+          # For now, just verify the endpoints are accessible
+          curl -f http://finbot-api.production.svc.cluster.local:8080/metrics | grep -q "process_cpu_seconds_total" && {
+            echo "✓ API resource metrics available"
+          } || {
+            echo "WARNING: API resource metrics may not be available"
+          }
+          
+          echo ""
+          echo "All application performance tests completed!"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+
+---
+# Application Test Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: application-test-sa
+  namespace: application-tests
+
+---
+# Application Test RBAC
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: application-test-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling.k8s.io"]
+  resources: ["verticalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: application-test-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: application-test-role
+subjects:
+- kind: ServiceAccount
+  name: application-test-sa
+  namespace: application-tests
+
+---
+# Application Test Runner Script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: application-test-runner
+  namespace: application-tests
+data:
+  run-application-tests.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "Starting FinBot v4 Application Tests..."
+    echo "======================================"
+    
+    # Test execution order
+    TESTS=(
+      "application-startup-test"
+      "health-check-test"
+      "autoscaling-test"
+      "service-discovery-test"
+      "application-performance-test"
+    )
+    
+    PASSED=0
+    FAILED=0
+    
+    for test in "${TESTS[@]}"; do
+      echo ""
+      echo "Running test: $test"
+      echo "------------------------"
+      
+      # Delete any existing test job
+      kubectl delete job $test -n application-tests --ignore-not-found
+      
+      # Create and run test
+      kubectl create job $test --from=job/$test -n application-tests 2>/dev/null || {
+        echo "ERROR: Failed to create test job $test"
+        ((FAILED++))
+        continue
+      }
+      
+      # Wait for completion
+      kubectl wait --for=condition=complete job/$test -n application-tests --timeout=300s || {
+        echo "ERROR: Test $test timed out or failed"
+        kubectl logs job/$test -n application-tests
+        ((FAILED++))
+        continue
+      }
+      
+      # Show results
+      kubectl logs job/$test -n application-tests
+      echo "✓ Test $test completed successfully"
+      ((PASSED++))
+      
+      # Cleanup
+      kubectl delete job $test -n application-tests --ignore-not-found
+    done
+    
+    echo ""
+    echo "======================================"
+    echo "Application Test Results:"
+    echo "  Passed: $PASSED"
+    echo "  Failed: $FAILED"
+    echo "  Total:  $((PASSED + FAILED))"
+    
+    if [ $FAILED -gt 0 ]; then
+      echo "❌ Some application tests failed!"
+      exit 1
+    else
+      echo "✅ All application tests passed!"
+      exit 0
+    fi

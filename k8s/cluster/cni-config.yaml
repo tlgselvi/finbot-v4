@@ -1,0 +1,418 @@
+# FinBot v4 - CNI (Container Network Interface) Configuration
+# Calico CNI for secure and scalable networking
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: calico-config
+  namespace: kube-system
+data:
+  # Calico configuration
+  cni_network_config: |-
+    {
+      "name": "k8s-pod-network",
+      "cniVersion": "0.3.1",
+      "plugins": [
+        {
+          "type": "calico",
+          "log_level": "info",
+          "log_file_path": "/var/log/calico/cni/cni.log",
+          "datastore_type": "kubernetes",
+          "nodename": "__KUBERNETES_NODE_NAME__",
+          "mtu": __CNI_MTU__,
+          "ipam": {
+            "type": "calico-ipam"
+          },
+          "policy": {
+            "type": "k8s"
+          },
+          "kubernetes": {
+            "kubeconfig": "__KUBECONFIG_FILEPATH__"
+          }
+        },
+        {
+          "type": "portmap",
+          "snat": true,
+          "capabilities": {"portMappings": true}
+        },
+        {
+          "type": "bandwidth",
+          "capabilities": {"bandwidth": true}
+        }
+      ]
+    }
+  
+  # Calico node configuration
+  calico_backend: "bird"
+  veth_mtu: "1440"
+  
+  # IP Pool configuration
+  ipv4_pool_cidr: "192.168.0.0/16"
+  ipv4_pool_block_size: "26"
+  
+  # Felix configuration
+  felix_ipinipmtu: "1440"
+  felix_vxlanmtu: "1440"
+  felix_wireguardmtu: "1440"
+
+---
+# Calico Node DaemonSet
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: calico-node
+  namespace: kube-system
+  labels:
+    k8s-app: calico-node
+spec:
+  selector:
+    matchLabels:
+      k8s-app: calico-node
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        k8s-app: calico-node
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      hostNetwork: true
+      tolerations:
+      - operator: Exists
+        effect: NoSchedule
+      - operator: Exists
+        effect: NoExecute
+      - operator: Exists
+        key: CriticalAddonsOnly
+      - effect: NoSchedule
+        key: node.kubernetes.io/not-ready
+      serviceAccountName: calico-node
+      terminationGracePeriodSeconds: 0
+      priorityClassName: system-node-critical
+      initContainers:
+      - name: upgrade-ipam
+        image: calico/cni:v3.26.1
+        command: ["/opt/cni/bin/calico-ipam", "-upgrade"]
+        envFrom:
+        - configMapRef:
+            name: kubernetes-services-endpoint
+            optional: true
+        env:
+        - name: KUBERNETES_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: CALICO_NETWORKING_BACKEND
+          valueFrom:
+            configMapKeyRef:
+              name: calico-config
+              key: calico_backend
+        volumeMounts:
+        - mountPath: /var/lib/cni/networks
+          name: host-local-net-dir
+        - mountPath: /host/opt/cni/bin
+          name: cni-bin-dir
+        securityContext:
+          privileged: true
+      - name: install-cni
+        image: calico/cni:v3.26.1
+        command: ["/opt/cni/bin/install"]
+        envFrom:
+        - configMapRef:
+            name: kubernetes-services-endpoint
+            optional: true
+        env:
+        - name: CNI_CONF_NAME
+          value: "10-calico.conflist"
+        - name: CNI_NETWORK_CONFIG
+          valueFrom:
+            configMapKeyRef:
+              name: calico-config
+              key: cni_network_config
+        - name: KUBERNETES_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: CNI_MTU
+          valueFrom:
+            configMapKeyRef:
+              name: calico-config
+              key: veth_mtu
+        - name: SLEEP
+          value: "false"
+        volumeMounts:
+        - mountPath: /host/opt/cni/bin
+          name: cni-bin-dir
+        - mountPath: /host/etc/cni/net.d
+          name: cni-net-dir
+        securityContext:
+          privileged: true
+      containers:
+      - name: calico-node
+        image: calico/node:v3.26.1
+        envFrom:
+        - configMapRef:
+            name: kubernetes-services-endpoint
+            optional: true
+        env:
+        - name: DATASTORE_TYPE
+          value: "kubernetes"
+        - name: WAIT_FOR_DATASTORE
+          value: "true"
+        - name: NODENAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: CALICO_NETWORKING_BACKEND
+          valueFrom:
+            configMapKeyRef:
+              name: calico-config
+              key: calico_backend
+        - name: CLUSTER_TYPE
+          value: "k8s,bgp"
+        - name: IP
+          value: "autodetect"
+        - name: CALICO_IPV4POOL_CIDR
+          valueFrom:
+            configMapKeyRef:
+              name: calico-config
+              key: ipv4_pool_cidr
+        - name: CALICO_IPV4POOL_BLOCK_SIZE
+          valueFrom:
+            configMapKeyRef:
+              name: calico-config
+              key: ipv4_pool_block_size
+        - name: CALICO_DISABLE_FILE_LOGGING
+          value: "true"
+        - name: FELIX_DEFAULTENDPOINTTOHOSTACTION
+          value: "ACCEPT"
+        - name: FELIX_IPV6SUPPORT
+          value: "false"
+        - name: FELIX_HEALTHENABLED
+          value: "true"
+        - name: FELIX_PROMETHEUSMETRICSENABLED
+          value: "true"
+        - name: FELIX_PROMETHEUSMETRICSPORT
+          value: "9091"
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/calico-node
+              - -shutdown
+        livenessProbe:
+          exec:
+            command:
+            - /bin/calico-node
+            - -felix-live
+            - -bird-live
+          periodSeconds: 10
+          initialDelaySeconds: 10
+          failureThreshold: 6
+          timeoutSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - /bin/calico-node
+            - -felix-ready
+            - -bird-ready
+          periodSeconds: 10
+          timeoutSeconds: 10
+        volumeMounts:
+        - mountPath: /lib/modules
+          name: lib-modules
+          readOnly: true
+        - mountPath: /run/xtables.lock
+          name: xtables-lock
+          readOnly: false
+        - mountPath: /var/run/calico
+          name: var-run-calico
+          readOnly: false
+        - mountPath: /var/lib/calico
+          name: var-lib-calico
+          readOnly: false
+        - name: policysync
+          mountPath: /var/run/nodeagent
+        - name: cni-log-dir
+          mountPath: /var/log/calico/cni
+          readOnly: true
+      volumes:
+      - name: lib-modules
+        hostPath:
+          path: /lib/modules
+      - name: var-run-calico
+        hostPath:
+          path: /var/run/calico
+      - name: var-lib-calico
+        hostPath:
+          path: /var/lib/calico
+      - name: xtables-lock
+        hostPath:
+          path: /run/xtables.lock
+          type: FileOrCreate
+      - name: cni-bin-dir
+        hostPath:
+          path: /opt/cni/bin
+      - name: cni-net-dir
+        hostPath:
+          path: /etc/cni/net.d
+      - name: cni-log-dir
+        hostPath:
+          path: /var/log/calico/cni
+      - name: host-local-net-dir
+        hostPath:
+          path: /var/lib/cni/networks
+      - name: policysync
+        hostPath:
+          type: DirectoryOrCreate
+          path: /var/run/nodeagent
+
+---
+# Service Account for Calico Node
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: calico-node
+  namespace: kube-system
+
+---
+# ClusterRole for Calico Node
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-node
+rules:
+- apiGroups: [""]
+  resources:
+  - pods
+  - nodes
+  - namespaces
+  verbs:
+  - get
+- apiGroups: [""]
+  resources:
+  - endpoints
+  - services
+  verbs:
+  - watch
+  - list
+  - get
+- apiGroups: [""]
+  resources:
+  - configmaps
+  verbs:
+  - get
+- apiGroups: [""]
+  resources:
+  - nodes/status
+  verbs:
+  - patch
+  - update
+- apiGroups: ["networking.k8s.io"]
+  resources:
+  - networkpolicies
+  verbs:
+  - watch
+  - list
+- apiGroups: [""]
+  resources:
+  - pods
+  - namespaces
+  - serviceaccounts
+  verbs:
+  - list
+  - watch
+- apiGroups: [""]
+  resources:
+  - pods/status
+  verbs:
+  - patch
+- apiGroups: ["crd.projectcalico.org"]
+  resources:
+  - globalfelixconfigs
+  - felixconfigurations
+  - bgppeers
+  - globalbgpconfigs
+  - bgpconfigurations
+  - ippools
+  - ipamblocks
+  - globalnetworkpolicies
+  - globalnetworksets
+  - networkpolicies
+  - networksets
+  - clusterinformations
+  - hostendpoints
+  - blockaffinities
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups: ["crd.projectcalico.org"]
+  resources:
+  - ippools
+  - felixconfigurations
+  - clusterinformations
+  verbs:
+  - create
+  - update
+- apiGroups: [""]
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+  - patch
+- apiGroups: ["crd.projectcalico.org"]
+  resources:
+  - blockaffinities
+  - ipamblocks
+  - ipamhandles
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups: ["crd.projectcalico.org"]
+  resources:
+  - ipamconfigs
+  verbs:
+  - get
+- apiGroups: ["crd.projectcalico.org"]
+  resources:
+  - blockaffinities
+  verbs:
+  - watch
+- apiGroups: ["apps"]
+  resources:
+  - daemonsets
+  verbs:
+  - get
+
+---
+# ClusterRoleBinding for Calico Node
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calico-node
+subjects:
+- kind: ServiceAccount
+  name: calico-node
+  namespace: kube-system
