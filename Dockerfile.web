@@ -1,0 +1,25 @@
+FROM nginx:alpine
+
+# Copy static files
+COPY public/ /usr/share/nginx/html/
+
+# Copy nginx configuration
+COPY nginx.conf /etc/nginx/nginx.conf
+
+# Create non-root user
+RUN addgroup -g 1001 -S finbotgroup
+RUN adduser -S finbot -u 1001 -G finbotgroup
+
+# Set permissions
+RUN chown -R finbot:finbotgroup /usr/share/nginx/html
+RUN chown -R finbot:finbotgroup /var/cache/nginx
+RUN chown -R finbot:finbotgroup /var/log/nginx
+RUN chown -R finbot:finbotgroup /etc/nginx/conf.d
+RUN touch /var/run/nginx.pid
+RUN chown -R finbot:finbotgroup /var/run/nginx.pid
+
+USER finbot
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]

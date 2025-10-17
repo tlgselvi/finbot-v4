@@ -1,0 +1,86 @@
+version: '3.8'
+
+services:
+  finbot-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://finbot:finbot123@postgres:5432/finbot_v4
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=your-super-secret-jwt-key-here
+      - API_VERSION=v4.0.0
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./src:/app/src
+      - ./package.json:/app/package.json
+    networks:
+      - finbot-network
+
+  finbot-web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+      - API_BASE_URL=http://localhost:3001
+      - APP_VERSION=v4.0.0
+    depends_on:
+      - finbot-api
+    volumes:
+      - ./public:/app/public
+    networks:
+      - finbot-network
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=finbot_v4
+      - POSTGRES_USER=finbot
+      - POSTGRES_PASSWORD=finbot123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/migrations:/docker-entrypoint-initdb.d
+    networks:
+      - finbot-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - finbot-network
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=finbot_timeseries
+      - POSTGRES_USER=finbot
+      - POSTGRES_PASSWORD=finbot123
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    networks:
+      - finbot-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  timescale_data:
+
+networks:
+  finbot-network:
+    driver: bridge

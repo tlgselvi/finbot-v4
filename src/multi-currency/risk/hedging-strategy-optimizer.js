@@ -1,850 +1,751 @@
 /**
  * Hedging Strategy Optimizer
  * 
- * Implements comprehensive hedging strategy optimization including:
- * - Hedging strategy recommendation engine using optimization algorithms
- * - Cost-benefit analysis for different hedging instruments
- * - Hedge effectiveness testing and performance tracking
- * - Dynamic hedge ratio optimization
+ * Provides intelligent hedging strategy recommendations using optimization algorithms
+ * to minimize currency risk while considering cost-benefit trade-offs.
  */
 
-const EventEmitter = require('events');
-const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
 
-// UUID v4 generator using crypto
-function uuidv4() {
-    return crypto.randomUUID();
-}
-
-class HedgingStrategyOptimizer extends EventEmitter {
+class HedgingStrategyOptimizer {
     constructor(options = {}) {
-        super();
+        this.riskCalculator = options.riskCalculator;
+        this.marketDataService = options.marketDataService;
+        this.costCalculator = options.costCalculator;
+        this.logger = options.logger || console;
         
-        this.config = {
-            // Optimization parameters
-            maxIterations: 1000,
-            convergenceThreshold: 0.0001,
-            riskTolerance: 0.05, // 5% maximum acceptable risk
-            
-            // Hedging instruments and their characteristics
-            instruments: {
-                forward: {
-                    name: 'Forward Contract',
-                    costBasisPoints: 10, // 0.1% cost
-                    effectiveness: 0.95,
-                    minAmount: 10000,
-                    maxTenor: 365, // days
-                    liquidity: 'high'
-                },
-                option: {
-                    name: 'Currency Option',
-                    costBasisPoints: 50, // 0.5% premium
-                    effectiveness: 0.85,
-                    minAmount: 25000,
-                    maxTenor: 180,
-                    liquidity: 'medium'
-                },
-                swap: {
-                    name: 'Currency Swap',
-                    costBasisPoints: 25, // 0.25% cost
-                    effectiveness: 0.90,
-                    minAmount: 100000,
-                    maxTenor: 1095, // 3 years
-                    liquidity: 'medium'
-                },
-                naturalHedge: {
-                    name: 'Natural Hedge',
-                    costBasisPoints: 0, // No direct cost
-                    effectiveness: 0.70,
-                    minAmount: 0,
-                    maxTenor: Infinity,
-                    liquidity: 'high'
-                }
-            },
-            
-            // Strategy parameters
-            hedgeRatioRange: { min: 0.25, max: 1.0 },
-            rebalanceThreshold: 0.1, // 10% deviation triggers rebalance
-            effectivenessThreshold: 0.8, // Minimum 80% effectiveness
-            
-            ...options
-        };
-
-        this.optimizationCache = new Map();
-        this.performanceTracker = new Map();
-        this.activeStrategies = new Map();
+        // Optimization parameters
+        this.maxIterations = options.maxIterations || 1000;
+        this.convergenceThreshold = options.convergenceThreshold || 0.0001;
+        this.riskTolerance = options.riskTolerance || 0.05;
+        
+        // Hedging instruments configuration
+        this.availableInstruments = options.availableInstruments || [
+            'forward_contract',
+            'currency_option',
+            'currency_swap',
+            'natural_hedge'
+        ];
+        
+        // Strategy templates
+        this.strategyTemplates = new Map();
+        this.initializeStrategyTemplates();
     }
 
     /**
-     * Generate optimal hedging strategies for currency exposures
+     * Initialize predefined strategy templates
      */
-    async generateHedgingStrategies(userId, currencyRisk, preferences = {}) {
-        try {
-            const strategyId = uuidv4();
-            const timestamp = new Date();
+    initializeStrategyTemplates() {
+        // Conservative hedging strategy
+        this.strategyTemplates.set('conservative', {
+            name: 'Conservative Hedging',
+            description: 'Low-risk hedging with high hedge ratios',
+            defaultHedgeRatio: 0.8,
+            preferredInstruments: ['forward_contract', 'currency_swap'],
+            riskReductionTarget: 0.7,
+            maxCost: 0.02
+        });
 
-            // Analyze exposures and identify hedging needs
-            const hedgingNeeds = this.analyzeHedgingNeeds(currencyRisk);
+        // Balanced hedging strategy
+        this.strategyTemplates.set('balanced', {
+            name: 'Balanced Hedging',
+            description: 'Moderate risk-cost balance',
+            defaultHedgeRatio: 0.5,
+            preferredInstruments: ['forward_contract', 'currency_option'],
+            riskReductionTarget: 0.5,
+            maxCost: 0.015
+        });
+
+        // Aggressive hedging strategy
+        this.strategyTemplates.set('aggressive', {
+            name: 'Aggressive Hedging',
+            description: 'Cost-optimized with selective hedging',
+            defaultHedgeRatio: 0.3,
+            preferredInstruments: ['currency_option', 'natural_hedge'],
+            riskReductionTarget: 0.3,
+            maxCost: 0.01
+        });
+
+        // Dynamic hedging strategy
+        this.strategyTemplates.set('dynamic', {
+            name: 'Dynamic Hedging',
+            description: 'Adaptive hedging based on market conditions',
+            defaultHedgeRatio: 0.6,
+            preferredInstruments: ['forward_contract', 'currency_option', 'currency_swap'],
+            riskReductionTarget: 0.6,
+            maxCost: 0.025
+        });
+    }
+
+    /**
+     * Generate optimal hedging recommendations for a user's portfolio
+     */
+    async generateHedgingRecommendations(userId, options = {}) {
+        try {
+            // Get current risk assessment
+            const riskAssessment = await this.riskCalculator.calculateRisk(userId);
             
-            // Generate strategy alternatives
-            const strategies = await this.generateStrategyAlternatives(hedgingNeeds, preferences);
+            // Get market data for hedging instruments
+            const marketData = await this.getMarketData(riskAssessment.exposures);
             
-            // Optimize hedge ratios for each strategy
-            const optimizedStrategies = await this.optimizeHedgeRatios(strategies, currencyRisk);
+            // Generate strategy recommendations
+            const recommendations = [];
+            
+            for (const exposure of riskAssessment.exposures) {
+                if (exposure.riskLevel > this.riskTolerance) {
+                    const strategies = await this.optimizeHedgingStrategies(
+                        exposure,
+                        marketData,
+                        options
+                    );
+                    recommendations.push(...strategies);
+                }
+            }
+
+            // Rank and filter recommendations
+            const rankedRecommendations = this.rankRecommendations(recommendations);
             
             // Perform cost-benefit analysis
-            const analyzedStrategies = await this.performCostBenefitAnalysis(optimizedStrategies, currencyRisk);
+            const analysisResults = await this.performCostBenefitAnalysis(
+                rankedRecommendations,
+                riskAssessment
+            );
+
+            this.logger.info(`Generated ${rankedRecommendations.length} hedging recommendations for user ${userId}`);
             
-            // Rank strategies by efficiency
-            const rankedStrategies = this.rankStrategiesByEfficiency(analyzedStrategies);
-            
-            // Generate implementation plan
-            const implementationPlan = await this.generateImplementationPlan(rankedStrategies[0], currencyRisk);
-
-            const hedgingRecommendation = {
-                id: strategyId,
-                userId,
-                timestamp,
-                baseCurrency: currencyRisk.baseCurrency,
-                hedgingNeeds,
-                recommendedStrategy: rankedStrategies[0],
-                alternativeStrategies: rankedStrategies.slice(1, 4), // Top 3 alternatives
-                implementationPlan,
-                riskReduction: this.calculateRiskReduction(rankedStrategies[0], currencyRisk),
-                totalCost: this.calculateTotalCost(rankedStrategies[0]),
-                expectedEffectiveness: rankedStrategies[0].effectiveness,
-                rebalanceSchedule: this.generateRebalanceSchedule(rankedStrategies[0])
-            };
-
-            // Cache the recommendation
-            this.optimizationCache.set(userId, hedgingRecommendation);
-            
-            // Emit strategy generated event
-            this.emit('strategyGenerated', hedgingRecommendation);
-
-            return hedgingRecommendation;
-
-        } catch (error) {
-            this.emit('error', {
-                type: 'HEDGING_OPTIMIZATION_ERROR',
-                userId,
-                error: error.message,
+            return {
+                recommendations: rankedRecommendations,
+                costBenefitAnalysis: analysisResults,
+                riskReduction: this.calculateTotalRiskReduction(rankedRecommendations),
+                totalCost: this.calculateTotalCost(rankedRecommendations),
                 timestamp: new Date()
-            });
+            };
+            
+        } catch (error) {
+            this.logger.error(`Failed to generate hedging recommendations for user ${userId}:`, error);
             throw error;
         }
     }
 
     /**
-     * Analyze hedging needs based on currency risk assessment
+     * Optimize hedging strategies for a specific currency exposure
      */
-    analyzeHedgingNeeds(currencyRisk) {
-        const hedgingNeeds = [];
-        
-        // Analyze each currency exposure
-        for (const [currency, exposure] of currencyRisk.exposures) {
-            const needsHedging = this.assessHedgingNeed(exposure, currencyRisk);
-            
-            if (needsHedging.required) {
-                hedgingNeeds.push({
-                    currency,
-                    exposure: exposure.absoluteExposure,
-                    relativeExposure: exposure.relativeExposure,
-                    priority: needsHedging.priority,
-                    riskContribution: this.getRiskContribution(currency, currencyRisk.riskFactors),
-                    volatility: this.getVolatility(currency, currencyRisk.volatilities),
-                    recommendedHedgeRatio: needsHedging.recommendedRatio,
-                    timeHorizon: needsHedging.timeHorizon,
-                    urgency: needsHedging.urgency
-                });
-            }
-        }
-        
-        // Sort by priority and risk contribution
-        return hedgingNeeds.sort((a, b) => {
-            if (a.priority !== b.priority) {
-                return this.getPriorityScore(b.priority) - this.getPriorityScore(a.priority);
-            }
-            return b.riskContribution - a.riskContribution;
-        });
-    }
-
-    /**
-     * Assess if a currency exposure needs hedging
-     */
-    assessHedgingNeed(exposure, currencyRisk) {
-        const riskScore = currencyRisk.riskScore;
-        const concentration = exposure.relativeExposure;
-        const volatility = this.getVolatility(exposure.currency, currencyRisk.volatilities);
-        
-        // High concentration (>25%) always needs hedging
-        if (concentration > 0.25) {
-            return {
-                required: true,
-                priority: 'high',
-                recommendedRatio: Math.min(0.8, concentration * 2),
-                timeHorizon: 90, // 3 months
-                urgency: 'immediate'
-            };
-        }
-        
-        // High volatility currencies (>20% annual) need hedging
-        if (volatility > 0.20) {
-            return {
-                required: true,
-                priority: 'medium',
-                recommendedRatio: Math.min(0.6, volatility * 2),
-                timeHorizon: 180, // 6 months
-                urgency: 'high'
-            };
-        }
-        
-        // Medium risk exposures (>15% concentration or >15% volatility)
-        if (concentration > 0.15 || volatility > 0.15) {
-            return {
-                required: true,
-                priority: 'low',
-                recommendedRatio: Math.min(0.4, Math.max(concentration, volatility) * 1.5),
-                timeHorizon: 365, // 1 year
-                urgency: 'medium'
-            };
-        }
-        
-        return { required: false };
-    }
-
-    /**
-     * Generate strategy alternatives for hedging needs
-     */
-    async generateStrategyAlternatives(hedgingNeeds, preferences = {}) {
+    async optimizeHedgingStrategies(exposure, marketData, options = {}) {
         const strategies = [];
+        const template = options.template || 'balanced';
+        const strategyConfig = this.strategyTemplates.get(template);
         
-        for (const need of hedgingNeeds) {
-            // Generate strategies for each instrument type
-            for (const [instrumentType, instrument] of Object.entries(this.config.instruments)) {
-                // Check if instrument is suitable for this exposure
-                if (need.exposure >= instrument.minAmount && 
-                    need.timeHorizon <= instrument.maxTenor) {
-                    
-                    const strategy = {
-                        id: uuidv4(),
-                        type: 'single_instrument',
-                        currency: need.currency,
-                        exposure: need.exposure,
-                        instrument: {
-                            type: instrumentType,
-                            name: instrument.name,
-                            characteristics: instrument
-                        },
-                        hedgeRatio: need.recommendedHedgeRatio,
-                        timeHorizon: need.timeHorizon,
-                        cost: this.calculateInstrumentCost(need.exposure, instrument),
-                        effectiveness: instrument.effectiveness,
-                        liquidity: instrument.liquidity
-                    };
-                    
+        // Generate strategies for each available instrument
+        for (const instrument of this.availableInstruments) {
+            if (strategyConfig.preferredInstruments.includes(instrument)) {
+                const strategy = await this.createOptimalStrategy(
+                    exposure,
+                    instrument,
+                    marketData,
+                    strategyConfig
+                );
+                
+                if (strategy) {
                     strategies.push(strategy);
                 }
             }
-            
-            // Generate combination strategies for large exposures
-            if (need.exposure > 100000 && need.priority === 'high') {
-                const combinationStrategy = await this.generateCombinationStrategy(need);
-                if (combinationStrategy) {
-                    strategies.push(combinationStrategy);
-                }
+        }
+
+        // Optimize hedge ratios using mathematical optimization
+        const optimizedStrategies = await this.optimizeHedgeRatios(strategies, exposure);
+        
+        return optimizedStrategies;
+    }
+
+    /**
+     * Create optimal strategy for a specific instrument
+     */
+    async createOptimalStrategy(exposure, instrument, marketData, config) {
+        try {
+            const instrumentData = marketData[exposure.currency]?.[instrument];
+            if (!instrumentData) {
+                return null;
             }
-        }
-        
-        // Generate portfolio-level strategies
-        const portfolioStrategies = await this.generatePortfolioStrategies(hedgingNeeds);
-        strategies.push(...portfolioStrategies);
-        
-        return strategies;
-    }
 
-    /**
-     * Generate combination hedging strategy
-     */
-    async generateCombinationStrategy(need) {
-        // Combine forward + option for better cost-effectiveness
-        const forwardPortion = 0.7; // 70% forward
-        const optionPortion = 0.3;  // 30% option
-        
-        const forwardInstrument = this.config.instruments.forward;
-        const optionInstrument = this.config.instruments.option;
-        
-        const forwardAmount = need.exposure * forwardPortion;
-        const optionAmount = need.exposure * optionPortion;
-        
-        if (forwardAmount >= forwardInstrument.minAmount && 
-            optionAmount >= optionInstrument.minAmount) {
-            
-            return {
+            const strategy = {
                 id: uuidv4(),
-                type: 'combination',
-                currency: need.currency,
-                exposure: need.exposure,
-                instruments: [
-                    {
-                        type: 'forward',
-                        name: forwardInstrument.name,
-                        amount: forwardAmount,
-                        portion: forwardPortion,
-                        cost: this.calculateInstrumentCost(forwardAmount, forwardInstrument),
-                        characteristics: forwardInstrument,
-                        effectiveness: forwardInstrument.effectiveness
-                    },
-                    {
-                        type: 'option',
-                        name: optionInstrument.name,
-                        amount: optionAmount,
-                        portion: optionPortion,
-                        cost: this.calculateInstrumentCost(optionAmount, optionInstrument),
-                        characteristics: optionInstrument,
-                        effectiveness: optionInstrument.effectiveness
-                    }
-                ],
-                hedgeRatio: need.recommendedHedgeRatio,
-                timeHorizon: Math.min(forwardInstrument.maxTenor, optionInstrument.maxTenor),
-                cost: this.calculateInstrumentCost(forwardAmount, forwardInstrument) + 
-                      this.calculateInstrumentCost(optionAmount, optionInstrument),
-                effectiveness: (forwardInstrument.effectiveness * forwardPortion + 
-                              optionInstrument.effectiveness * optionPortion),
-                liquidity: 'medium'
+                name: `${config.name} - ${instrument.replace('_', ' ').toUpperCase()}`,
+                type: instrument,
+                targetCurrency: exposure.currency,
+                exposure: exposure.amount,
+                hedgeRatio: config.defaultHedgeRatio,
+                instruments: [],
+                effectiveness: 0,
+                cost: 0,
+                duration: this.getOptimalDuration(instrument, exposure),
+                riskReduction: 0,
+                confidence: 0.8,
+                marketConditions: this.assessMarketConditions(instrumentData),
+                createdAt: new Date()
             };
+
+            // Configure instrument-specific parameters
+            switch (instrument) {
+                case 'forward_contract':
+                    strategy.instruments = await this.configureForwardContract(
+                        exposure, instrumentData, config
+                    );
+                    break;
+                    
+                case 'currency_option':
+                    strategy.instruments = await this.configureCurrencyOption(
+                        exposure, instrumentData, config
+                    );
+                    break;
+                    
+                case 'currency_swap':
+                    strategy.instruments = await this.configureCurrencySwap(
+                        exposure, instrumentData, config
+                    );
+                    break;
+                    
+                case 'natural_hedge':
+                    strategy.instruments = await this.configureNaturalHedge(
+                        exposure, instrumentData, config
+                    );
+                    break;
+            }
+
+            // Calculate strategy metrics
+            strategy.cost = await this.calculateStrategyCost(strategy);
+            strategy.effectiveness = await this.calculateEffectiveness(strategy, exposure);
+            strategy.riskReduction = strategy.effectiveness * strategy.hedgeRatio;
+
+            return strategy;
+            
+        } catch (error) {
+            this.logger.error(`Failed to create strategy for ${instrument}:`, error);
+            return null;
         }
-        
-        return null;
     }
 
     /**
-     * Generate portfolio-level hedging strategies
+     * Configure forward contract hedging
      */
-    async generatePortfolioStrategies(hedgingNeeds) {
-        const strategies = [];
+    async configureForwardContract(exposure, marketData, config) {
+        const forwardRate = marketData.forwardRates?.['3M'] || marketData.spotRate;
+        const hedgeAmount = exposure.amount * config.defaultHedgeRatio;
         
-        // Basket hedge strategy - hedge multiple currencies together
-        if (hedgingNeeds.length > 2) {
-            const totalExposure = hedgingNeeds.reduce((sum, need) => sum + need.exposure, 0);
-            
-            strategies.push({
-                id: uuidv4(),
-                type: 'basket_hedge',
-                currencies: hedgingNeeds.map(need => need.currency),
-                totalExposure,
-                instrument: {
-                    type: 'swap',
-                    name: 'Multi-Currency Swap',
-                    characteristics: this.config.instruments.swap
-                },
-                hedgeRatio: 0.6, // Conservative basket hedge
-                timeHorizon: 180,
-                cost: this.calculateInstrumentCost(totalExposure, this.config.instruments.swap) * 0.8, // Discount for basket
-                effectiveness: 0.75, // Lower effectiveness due to correlation
-                liquidity: 'medium'
-            });
-        }
+        return [{
+            type: 'forward_contract',
+            currency: exposure.currency,
+            amount: hedgeAmount,
+            rate: forwardRate,
+            maturity: 90, // 3 months
+            premium: 0,
+            delta: 1.0,
+            gamma: 0,
+            vega: 0,
+            theta: 0
+        }];
+    }
+
+    /**
+     * Configure currency option hedging
+     */
+    async configureCurrencyOption(exposure, marketData, config) {
+        const spotRate = marketData.spotRate;
+        const volatility = marketData.impliedVolatility || 0.15;
+        const hedgeAmount = exposure.amount * config.defaultHedgeRatio;
         
-        // Natural hedge strategy - match exposures
-        const naturalHedgeOpportunities = this.identifyNaturalHedgeOpportunities(hedgingNeeds);
-        if (naturalHedgeOpportunities.length > 0) {
-            strategies.push(...naturalHedgeOpportunities);
-        }
+        // Determine optimal strike price (typically at-the-money or slightly out-of-the-money)
+        const strikeRate = spotRate * (exposure.direction === 'long' ? 0.98 : 1.02);
         
-        return strategies;
+        // Calculate option premium using Black-Scholes approximation
+        const premium = this.calculateOptionPremium(
+            spotRate, strikeRate, volatility, 0.25, 0.02
+        );
+
+        return [{
+            type: 'currency_option',
+            currency: exposure.currency,
+            amount: hedgeAmount,
+            strikeRate: strikeRate,
+            premium: premium,
+            maturity: 90,
+            optionType: exposure.direction === 'long' ? 'put' : 'call',
+            delta: this.calculateOptionDelta(spotRate, strikeRate, volatility, 0.25),
+            gamma: this.calculateOptionGamma(spotRate, strikeRate, volatility, 0.25),
+            vega: this.calculateOptionVega(spotRate, strikeRate, volatility, 0.25),
+            theta: this.calculateOptionTheta(spotRate, strikeRate, volatility, 0.25)
+        }];
+    }
+
+    /**
+     * Configure currency swap hedging
+     */
+    async configureCurrencySwap(exposure, marketData, config) {
+        const swapRate = marketData.swapRates?.['1Y'] || marketData.spotRate;
+        const hedgeAmount = exposure.amount * config.defaultHedgeRatio;
+        
+        return [{
+            type: 'currency_swap',
+            currency: exposure.currency,
+            amount: hedgeAmount,
+            swapRate: swapRate,
+            maturity: 365, // 1 year
+            paymentFrequency: 'quarterly',
+            floatingRate: marketData.interestRates?.floating || 0.02,
+            fixedRate: marketData.interestRates?.fixed || 0.025,
+            notionalAmount: hedgeAmount
+        }];
+    }
+
+    /**
+     * Configure natural hedge strategy
+     */
+    async configureNaturalHedge(exposure, marketData, config) {
+        // Natural hedging involves matching currency exposures
+        const hedgeAmount = exposure.amount * config.defaultHedgeRatio;
+        
+        return [{
+            type: 'natural_hedge',
+            currency: exposure.currency,
+            amount: hedgeAmount,
+            method: 'operational_matching',
+            description: 'Match currency exposure through operational activities',
+            effectiveness: 0.7, // Natural hedges are typically less precise
+            cost: 0.001, // Very low direct cost
+            implementation: 'gradual'
+        }];
     }
 
     /**
      * Optimize hedge ratios using mathematical optimization
      */
-    async optimizeHedgeRatios(strategies, currencyRisk) {
+    async optimizeHedgeRatios(strategies, exposure) {
         const optimizedStrategies = [];
         
         for (const strategy of strategies) {
-            const optimizedRatio = await this.findOptimalHedgeRatio(strategy, currencyRisk);
+            // Use gradient descent to find optimal hedge ratio
+            const optimalRatio = await this.findOptimalHedgeRatio(strategy, exposure);
             
-            optimizedStrategies.push({
+            // Update strategy with optimal ratio
+            const optimizedStrategy = {
                 ...strategy,
-                hedgeRatio: optimizedRatio,
-                optimizationDetails: {
-                    originalRatio: strategy.hedgeRatio,
-                    optimizedRatio,
-                    improvement: Math.abs(optimizedRatio - strategy.hedgeRatio),
-                    method: 'gradient_descent'
-                }
-            });
+                hedgeRatio: optimalRatio,
+                riskReduction: strategy.effectiveness * optimalRatio
+            };
+            
+            // Recalculate cost with new ratio
+            optimizedStrategy.cost = await this.calculateStrategyCost(optimizedStrategy);
+            
+            optimizedStrategies.push(optimizedStrategy);
         }
         
         return optimizedStrategies;
     }
 
     /**
-     * Find optimal hedge ratio using gradient descent
+     * Find optimal hedge ratio using optimization algorithm
      */
-    async findOptimalHedgeRatio(strategy, currencyRisk) {
-        const { min, max } = this.config.hedgeRatioRange;
-        let currentRatio = Math.max(min, Math.min(max, strategy.hedgeRatio));
-        let bestRatio = currentRatio;
-        let bestScore = await this.evaluateHedgeRatio(currentRatio, strategy, currencyRisk);
+    async findOptimalHedgeRatio(strategy, exposure) {
+        let bestRatio = strategy.hedgeRatio;
+        let bestScore = await this.calculateUtilityScore(strategy, exposure);
         
-        const learningRate = 0.01;
-        const maxIterations = this.config.maxIterations;
-        
-        for (let iteration = 0; iteration < maxIterations; iteration++) {
-            // Calculate gradient
-            const epsilon = 0.001;
-            const scoreUp = await this.evaluateHedgeRatio(
-                Math.min(max, currentRatio + epsilon), strategy, currencyRisk
-            );
-            const scoreDown = await this.evaluateHedgeRatio(
-                Math.max(min, currentRatio - epsilon), strategy, currencyRisk
-            );
+        // Simple grid search optimization
+        for (let ratio = 0.1; ratio <= 1.0; ratio += 0.1) {
+            const testStrategy = { ...strategy, hedgeRatio: ratio };
+            testStrategy.cost = await this.calculateStrategyCost(testStrategy);
+            testStrategy.riskReduction = strategy.effectiveness * ratio;
             
-            const gradient = (scoreUp - scoreDown) / (2 * epsilon);
+            const score = await this.calculateUtilityScore(testStrategy, exposure);
             
-            // Update ratio
-            const newRatio = Math.max(min, Math.min(max, currentRatio + learningRate * gradient));
-            const newScore = await this.evaluateHedgeRatio(newRatio, strategy, currencyRisk);
-            
-            if (newScore > bestScore) {
-                bestScore = newScore;
-                bestRatio = newRatio;
+            if (score > bestScore) {
+                bestScore = score;
+                bestRatio = ratio;
             }
-            
-            // Check convergence
-            if (Math.abs(newRatio - currentRatio) < this.config.convergenceThreshold) {
-                break;
-            }
-            
-            currentRatio = newRatio;
         }
         
         return bestRatio;
     }
 
     /**
-     * Evaluate hedge ratio effectiveness
+     * Calculate utility score for strategy optimization
      */
-    async evaluateHedgeRatio(ratio, strategy, currencyRisk) {
-        // Calculate risk reduction
-        const riskReduction = this.calculateRiskReductionForRatio(ratio, strategy, currencyRisk);
+    async calculateUtilityScore(strategy, exposure) {
+        const riskReductionWeight = 0.6;
+        const costWeight = 0.3;
+        const effectivenessWeight = 0.1;
         
-        // Calculate cost
-        const cost = this.calculateCostForRatio(ratio, strategy);
+        const riskReductionScore = strategy.riskReduction;
+        const costScore = Math.max(0, 1 - (strategy.cost / 0.05)); // Normalize cost
+        const effectivenessScore = strategy.effectiveness;
         
-        // Calculate effectiveness score (risk reduction per unit cost)
-        const effectivenessScore = riskReduction / (cost + 1); // +1 to avoid division by zero
-        
-        // Penalize extreme ratios
-        const ratioPenalty = Math.abs(ratio - 0.5) * 0.1; // Prefer moderate ratios
-        
-        return effectivenessScore - ratioPenalty;
+        return (riskReductionWeight * riskReductionScore) +
+               (costWeight * costScore) +
+               (effectivenessWeight * effectivenessScore);
     }
 
     /**
-     * Perform cost-benefit analysis for strategies
+     * Rank recommendations by effectiveness and cost
      */
-    async performCostBenefitAnalysis(strategies, currencyRisk) {
-        const analyzedStrategies = [];
-        
-        for (const strategy of strategies) {
-            const analysis = {
-                ...strategy,
-                costBenefitAnalysis: {
-                    // Costs
-                    directCost: this.calculateDirectCost(strategy),
-                    opportunityCost: this.calculateOpportunityCost(strategy),
-                    transactionCost: this.calculateTransactionCost(strategy),
-                    totalCost: 0, // Will be calculated below
-                    
-                    // Benefits
-                    riskReduction: this.calculateRiskReduction(strategy, currencyRisk),
-                    volatilityReduction: this.calculateVolatilityReduction(strategy, currencyRisk),
-                    downSideProtection: this.calculateDownsideProtection(strategy, currencyRisk),
-                    totalBenefit: 0, // Will be calculated below
-                    
-                    // Ratios
-                    benefitCostRatio: 0,
-                    riskAdjustedReturn: 0,
-                    sharpeRatio: 0,
-                    
-                    // Effectiveness metrics
-                    hedgeEffectiveness: this.calculateHedgeEffectiveness(strategy),
-                    correlationEffectiveness: this.calculateCorrelationEffectiveness(strategy, currencyRisk),
-                    
-                    // Scenario analysis
-                    scenarioAnalysis: await this.performScenarioAnalysis(strategy, currencyRisk)
-                }
-            };
+    rankRecommendations(recommendations) {
+        return recommendations.sort((a, b) => {
+            // Primary sort: risk reduction per unit cost
+            const aRatio = a.riskReduction / (a.cost || 0.001);
+            const bRatio = b.riskReduction / (b.cost || 0.001);
             
-            // Calculate totals
-            const costAnalysis = analysis.costBenefitAnalysis;
-            costAnalysis.totalCost = costAnalysis.directCost + costAnalysis.opportunityCost + costAnalysis.transactionCost;
-            costAnalysis.totalBenefit = costAnalysis.riskReduction + costAnalysis.volatilityReduction + costAnalysis.downSideProtection;
-            
-            // Calculate ratios
-            costAnalysis.benefitCostRatio = costAnalysis.totalBenefit / (costAnalysis.totalCost + 1);
-            costAnalysis.riskAdjustedReturn = costAnalysis.totalBenefit / Math.sqrt(costAnalysis.totalCost + 1);
-            
-            analyzedStrategies.push(analysis);
-        }
-        
-        return analyzedStrategies;
-    }
-
-    /**
-     * Rank strategies by efficiency
-     */
-    rankStrategiesByEfficiency(strategies) {
-        return strategies.sort((a, b) => {
-            const scoreA = this.calculateEfficiencyScore(a);
-            const scoreB = this.calculateEfficiencyScore(b);
-            return scoreB - scoreA; // Descending order
-        });
-    }
-
-    /**
-     * Calculate efficiency score for strategy ranking
-     */
-    calculateEfficiencyScore(strategy) {
-        const cba = strategy.costBenefitAnalysis;
-        
-        // Weighted scoring
-        const weights = {
-            benefitCostRatio: 0.3,
-            riskReduction: 0.25,
-            hedgeEffectiveness: 0.2,
-            liquidity: 0.15,
-            simplicity: 0.1
-        };
-        
-        const scores = {
-            benefitCostRatio: Math.min(cba.benefitCostRatio / 10, 1), // Normalize to 0-1
-            riskReduction: Math.min(cba.riskReduction / 100000, 1), // Normalize to 0-1
-            hedgeEffectiveness: cba.hedgeEffectiveness,
-            liquidity: this.getLiquidityScore(strategy.liquidity),
-            simplicity: strategy.type === 'single_instrument' ? 1 : 0.7
-        };
-        
-        let totalScore = 0;
-        for (const [metric, weight] of Object.entries(weights)) {
-            totalScore += scores[metric] * weight;
-        }
-        
-        return totalScore;
-    }
-
-    /**
-     * Generate implementation plan for recommended strategy
-     */
-    async generateImplementationPlan(strategy, currencyRisk) {
-        const plan = {
-            id: uuidv4(),
-            strategyId: strategy.id,
-            phases: [],
-            timeline: this.calculateImplementationTimeline(strategy),
-            prerequisites: this.identifyPrerequisites(strategy),
-            riskConsiderations: this.identifyImplementationRisks(strategy),
-            monitoringPlan: this.createMonitoringPlan(strategy)
-        };
-        
-        // Phase 1: Preparation
-        plan.phases.push({
-            phase: 1,
-            name: 'Preparation',
-            duration: 2, // days
-            tasks: [
-                'Obtain necessary approvals',
-                'Set up trading accounts if needed',
-                'Verify counterparty limits',
-                'Prepare documentation'
-            ],
-            deliverables: ['Signed agreements', 'Account setup confirmation']
-        });
-        
-        // Phase 2: Initial Implementation
-        plan.phases.push({
-            phase: 2,
-            name: 'Initial Implementation',
-            duration: 1,
-            tasks: [
-                'Execute initial hedge transactions',
-                'Confirm trade details',
-                'Update risk systems',
-                'Document positions'
-            ],
-            deliverables: ['Trade confirmations', 'Updated risk reports']
-        });
-        
-        // Phase 3: Monitoring and Adjustment
-        plan.phases.push({
-            phase: 3,
-            name: 'Ongoing Monitoring',
-            duration: strategy.timeHorizon,
-            tasks: [
-                'Daily position monitoring',
-                'Weekly effectiveness assessment',
-                'Monthly rebalancing review',
-                'Quarterly strategy review'
-            ],
-            deliverables: ['Monitoring reports', 'Rebalancing recommendations']
-        });
-        
-        return plan;
-    }
-
-    // Helper methods for calculations
-    calculateInstrumentCost(amount, instrument) {
-        if (!instrument || typeof instrument.costBasisPoints !== 'number') {
-            return amount * 0.001; // Default 0.1% cost
-        }
-        return amount * (instrument.costBasisPoints / 10000);
-    }
-
-    calculateDirectCost(strategy) {
-        if (strategy.type === 'single_instrument') {
-            return strategy.cost;
-        } else if (strategy.type === 'combination') {
-            return strategy.instruments.reduce((sum, inst) => sum + inst.cost, 0);
-        }
-        return strategy.cost || 0;
-    }
-
-    calculateOpportunityCost(strategy) {
-        // Simplified opportunity cost calculation
-        return strategy.exposure * 0.02 * (strategy.timeHorizon / 365); // 2% annual opportunity cost
-    }
-
-    calculateTransactionCost(strategy) {
-        // Simplified transaction cost
-        const baseCost = 100; // $100 base transaction cost
-        const variableCost = strategy.exposure * 0.0001; // 0.01% of exposure
-        return baseCost + variableCost;
-    }
-
-    calculateRiskReduction(strategy, currencyRisk) {
-        // Simplified risk reduction calculation
-        const baseRisk = this.getRiskContribution(strategy.currency, currencyRisk.riskFactors);
-        return baseRisk * strategy.hedgeRatio * strategy.effectiveness;
-    }
-
-    calculateVolatilityReduction(strategy, currencyRisk) {
-        const volatility = this.getVolatility(strategy.currency, currencyRisk.volatilities);
-        return strategy.exposure * volatility * strategy.hedgeRatio * strategy.effectiveness;
-    }
-
-    calculateDownsideProtection(strategy, currencyRisk) {
-        // Calculate protection against adverse movements
-        const var95 = currencyRisk.var.parametric.var95;
-        const currencyContribution = this.getCurrencyVarContribution(strategy.currency, currencyRisk);
-        return currencyContribution * strategy.hedgeRatio * strategy.effectiveness;
-    }
-
-    calculateHedgeEffectiveness(strategy) {
-        // Simplified effectiveness calculation
-        return strategy.effectiveness * (1 - Math.abs(strategy.hedgeRatio - 0.75) * 0.2);
-    }
-
-    calculateCorrelationEffectiveness(strategy, currencyRisk) {
-        // Check correlation with other positions
-        const correlations = currencyRisk.correlationMatrix;
-        let avgCorrelation = 0;
-        let count = 0;
-        
-        for (const [pair, correlation] of correlations) {
-            if (pair.includes(strategy.currency)) {
-                avgCorrelation += Math.abs(correlation);
-                count++;
+            if (Math.abs(aRatio - bRatio) > 0.1) {
+                return bRatio - aRatio;
             }
-        }
-        
-        return count > 0 ? 1 - (avgCorrelation / count) : 1;
+            
+            // Secondary sort: total risk reduction
+            return b.riskReduction - a.riskReduction;
+        });
     }
 
-    async performScenarioAnalysis(strategy, currencyRisk) {
+    /**
+     * Perform comprehensive cost-benefit analysis
+     */
+    async performCostBenefitAnalysis(recommendations, riskAssessment) {
+        const analysis = {
+            totalRiskReduction: 0,
+            totalCost: 0,
+            netBenefit: 0,
+            paybackPeriod: 0,
+            riskAdjustedReturn: 0,
+            scenarios: []
+        };
+
+        // Calculate aggregate metrics
+        for (const recommendation of recommendations) {
+            analysis.totalRiskReduction += recommendation.riskReduction;
+            analysis.totalCost += recommendation.cost;
+        }
+
+        // Calculate net benefit (risk reduction value minus cost)
+        const riskReductionValue = analysis.totalRiskReduction * riskAssessment.portfolioValue;
+        analysis.netBenefit = riskReductionValue - analysis.totalCost;
+        
+        // Calculate payback period
+        analysis.paybackPeriod = analysis.totalCost / (riskReductionValue / 365);
+        
+        // Calculate risk-adjusted return
+        analysis.riskAdjustedReturn = analysis.netBenefit / analysis.totalCost;
+
+        // Scenario analysis
+        analysis.scenarios = await this.performScenarioAnalysis(recommendations, riskAssessment);
+
+        return analysis;
+    }
+
+    /**
+     * Perform scenario analysis for hedging strategies
+     */
+    async performScenarioAnalysis(recommendations, riskAssessment) {
         const scenarios = [
-            { name: 'Base Case', probability: 0.6, marketMove: 0 },
-            { name: 'Adverse 10%', probability: 0.2, marketMove: -0.1 },
-            { name: 'Favorable 10%', probability: 0.15, marketMove: 0.1 },
-            { name: 'Extreme Adverse 25%', probability: 0.05, marketMove: -0.25 }
+            { name: 'Bull Market', currencyMovement: 0.1, probability: 0.3 },
+            { name: 'Bear Market', currencyMovement: -0.1, probability: 0.3 },
+            { name: 'High Volatility', currencyMovement: 0.05, volatilityMultiplier: 2, probability: 0.2 },
+            { name: 'Stable Market', currencyMovement: 0.02, probability: 0.2 }
         ];
-        
-        const results = [];
-        
+
+        const scenarioResults = [];
+
         for (const scenario of scenarios) {
-            const unhedgedLoss = strategy.exposure * Math.abs(Math.min(0, scenario.marketMove));
-            const hedgedLoss = unhedgedLoss * (1 - strategy.hedgeRatio * strategy.effectiveness);
-            const hedgeCost = this.calculateDirectCost(strategy);
-            const netBenefit = unhedgedLoss - hedgedLoss - hedgeCost;
-            
-            results.push({
+            const result = {
                 scenario: scenario.name,
                 probability: scenario.probability,
-                marketMove: scenario.marketMove,
-                unhedgedLoss,
-                hedgedLoss,
-                hedgeCost,
-                netBenefit,
-                effectiveProtection: (unhedgedLoss - hedgedLoss) / unhedgedLoss
-            });
+                unhedgedLoss: 0,
+                hedgedLoss: 0,
+                hedgingBenefit: 0,
+                costEffectiveness: 0
+            };
+
+            // Calculate unhedged portfolio impact
+            result.unhedgedLoss = riskAssessment.portfolioValue * 
+                                 Math.abs(scenario.currencyMovement) * 
+                                 (scenario.volatilityMultiplier || 1);
+
+            // Calculate hedged portfolio impact
+            let totalHedgeBenefit = 0;
+            let totalHedgeCost = 0;
+
+            for (const recommendation of recommendations) {
+                const hedgeBenefit = recommendation.riskReduction * result.unhedgedLoss;
+                totalHedgeBenefit += hedgeBenefit;
+                totalHedgeCost += recommendation.cost;
+            }
+
+            result.hedgedLoss = result.unhedgedLoss - totalHedgeBenefit;
+            result.hedgingBenefit = totalHedgeBenefit - totalHedgeCost;
+            result.costEffectiveness = result.hedgingBenefit / totalHedgeCost;
+
+            scenarioResults.push(result);
         }
-        
-        return results;
+
+        return scenarioResults;
     }
 
-    // Utility methods
-    getRiskContribution(currency, riskFactors) {
-        const factor = riskFactors.find(f => f.currency === currency && f.type === 'individual');
-        return factor ? factor.riskContribution : 0;
-    }
+    /**
+     * Calculate strategy cost including all fees and premiums
+     */
+    async calculateStrategyCost(strategy) {
+        let totalCost = 0;
 
-    getVolatility(currency, volatilities) {
-        for (const [curr, vol] of volatilities) {
-            if (curr === currency) {
-                return vol.annual || 0.15; // Default 15% if not found
+        for (const instrument of strategy.instruments) {
+            switch (instrument.type) {
+                case 'forward_contract':
+                    // Forward contracts typically have bid-ask spread cost
+                    totalCost += instrument.amount * 0.001; // 0.1% spread
+                    break;
+                    
+                case 'currency_option':
+                    // Options have premium cost
+                    totalCost += instrument.premium * instrument.amount;
+                    break;
+                    
+                case 'currency_swap':
+                    // Swaps have setup and ongoing costs
+                    totalCost += instrument.amount * 0.002; // 0.2% setup cost
+                    break;
+                    
+                case 'natural_hedge':
+                    // Natural hedges have minimal direct cost
+                    totalCost += instrument.amount * 0.0005; // 0.05% operational cost
+                    break;
             }
         }
-        return 0.15;
+
+        // Add management and monitoring costs
+        totalCost += strategy.exposure * 0.0001; // 0.01% management fee
+
+        return totalCost;
     }
 
-    getCurrencyVarContribution(currency, currencyRisk) {
-        // Simplified VaR contribution calculation
-        return currencyRisk.var.parametric.var95 * 0.3; // Assume 30% contribution
-    }
+    /**
+     * Calculate hedge effectiveness
+     */
+    async calculateEffectiveness(strategy, exposure) {
+        let effectiveness = 0;
 
-    getPriorityScore(priority) {
-        const scores = { high: 3, medium: 2, low: 1 };
-        return scores[priority] || 0;
-    }
-
-    getLiquidityScore(liquidity) {
-        const scores = { high: 1, medium: 0.7, low: 0.4 };
-        return scores[liquidity] || 0.5;
-    }
-
-    calculateRiskReductionForRatio(ratio, strategy, currencyRisk) {
-        const baseReduction = this.calculateRiskReduction(strategy, currencyRisk);
-        return baseReduction * ratio;
-    }
-
-    calculateCostForRatio(ratio, strategy) {
-        return this.calculateDirectCost(strategy) * ratio;
-    }
-
-    calculateTotalCost(strategy) {
-        return this.calculateDirectCost(strategy) + 
-               this.calculateOpportunityCost(strategy) + 
-               this.calculateTransactionCost(strategy);
-    }
-
-    calculateImplementationTimeline(strategy) {
-        const baseDays = 3; // Minimum implementation time
-        const complexityDays = strategy.type === 'combination' ? 2 : 0;
-        const sizeDays = strategy.exposure > 1000000 ? 2 : 0;
-        
-        return baseDays + complexityDays + sizeDays;
-    }
-
-    identifyPrerequisites(strategy) {
-        const prerequisites = ['Risk approval', 'Counterparty agreement'];
-        
-        if (strategy.exposure > 500000) {
-            prerequisites.push('Senior management approval');
+        for (const instrument of strategy.instruments) {
+            switch (instrument.type) {
+                case 'forward_contract':
+                    effectiveness = 0.95; // Very high effectiveness
+                    break;
+                    
+                case 'currency_option':
+                    effectiveness = Math.abs(instrument.delta) * 0.9; // Delta-adjusted effectiveness
+                    break;
+                    
+                case 'currency_swap':
+                    effectiveness = 0.85; // High effectiveness for long-term hedging
+                    break;
+                    
+                case 'natural_hedge':
+                    effectiveness = 0.7; // Moderate effectiveness
+                    break;
+            }
         }
-        
-        if (strategy.type === 'combination') {
-            prerequisites.push('Complex derivatives approval');
-        }
-        
-        return prerequisites;
+
+        // Adjust for market conditions and correlation
+        const marketAdjustment = this.getMarketConditionAdjustment(strategy.marketConditions);
+        effectiveness *= marketAdjustment;
+
+        return Math.min(effectiveness, 1.0);
     }
 
-    identifyImplementationRisks(strategy) {
-        return [
-            'Counterparty risk',
-            'Market timing risk',
-            'Basis risk',
-            'Liquidity risk',
-            'Operational risk'
-        ];
+    /**
+     * Get optimal duration for hedging instrument
+     */
+    getOptimalDuration(instrument, exposure) {
+        const durations = {
+            'forward_contract': 90,  // 3 months
+            'currency_option': 90,   // 3 months
+            'currency_swap': 365,    // 1 year
+            'natural_hedge': 180     // 6 months
+        };
+
+        return durations[instrument] || 90;
     }
 
-    createMonitoringPlan(strategy) {
+    /**
+     * Assess market conditions for strategy selection
+     */
+    assessMarketConditions(instrumentData) {
         return {
-            frequency: 'daily',
-            metrics: [
-                'Hedge effectiveness',
-                'Mark-to-market P&L',
-                'Basis tracking',
-                'Correlation stability'
-            ],
-            alerts: [
-                'Effectiveness below 80%',
-                'Correlation breakdown',
-                'Significant basis widening'
-            ],
-            reporting: {
-                daily: 'Position summary',
-                weekly: 'Effectiveness report',
-                monthly: 'Strategy review'
-            }
+            volatility: instrumentData.impliedVolatility || 0.15,
+            liquidity: instrumentData.liquidity || 'high',
+            spread: instrumentData.spread || 0.001,
+            trend: instrumentData.trend || 'neutral',
+            correlation: instrumentData.correlation || 0.8
         };
     }
 
-    generateRebalanceSchedule(strategy) {
+    /**
+     * Get market condition adjustment factor
+     */
+    getMarketConditionAdjustment(conditions) {
+        let adjustment = 1.0;
+
+        // Adjust for volatility
+        if (conditions.volatility > 0.25) {
+            adjustment *= 0.9; // High volatility reduces effectiveness
+        } else if (conditions.volatility < 0.1) {
+            adjustment *= 1.1; // Low volatility improves effectiveness
+        }
+
+        // Adjust for liquidity
+        if (conditions.liquidity === 'low') {
+            adjustment *= 0.85;
+        } else if (conditions.liquidity === 'high') {
+            adjustment *= 1.05;
+        }
+
+        return Math.min(adjustment, 1.2);
+    }
+
+    /**
+     * Get market data for hedging instruments
+     */
+    async getMarketData(exposures) {
+        const marketData = {};
+
+        for (const exposure of exposures) {
+            try {
+                const currencyData = await this.marketDataService.getCurrencyData(exposure.currency);
+                marketData[exposure.currency] = {
+                    spotRate: currencyData.spotRate,
+                    forwardRates: currencyData.forwardRates,
+                    swapRates: currencyData.swapRates,
+                    impliedVolatility: currencyData.impliedVolatility,
+                    interestRates: currencyData.interestRates,
+                    liquidity: currencyData.liquidity,
+                    spread: currencyData.spread,
+                    trend: currencyData.trend,
+                    correlation: currencyData.correlation
+                };
+            } catch (error) {
+                this.logger.warn(`Failed to get market data for ${exposure.currency}:`, error);
+                // Use default values
+                marketData[exposure.currency] = this.getDefaultMarketData();
+            }
+        }
+
+        return marketData;
+    }
+
+    /**
+     * Get default market data when real data is unavailable
+     */
+    getDefaultMarketData() {
         return {
-            frequency: 'monthly',
-            triggers: [
-                'Hedge ratio deviation > 10%',
-                'Effectiveness < 80%',
-                'Market structure change'
-            ],
-            nextRebalance: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days from now
+            spotRate: 1.0,
+            forwardRates: { '3M': 1.0, '6M': 1.0, '1Y': 1.0 },
+            swapRates: { '1Y': 1.0, '2Y': 1.0, '5Y': 1.0 },
+            impliedVolatility: 0.15,
+            interestRates: { floating: 0.02, fixed: 0.025 },
+            liquidity: 'medium',
+            spread: 0.001,
+            trend: 'neutral',
+            correlation: 0.8
         };
     }
 
-    identifyNaturalHedgeOpportunities(hedgingNeeds) {
-        // Simplified natural hedge identification
-        const opportunities = [];
-        
-        // Look for offsetting exposures
-        for (let i = 0; i < hedgingNeeds.length; i++) {
-            for (let j = i + 1; j < hedgingNeeds.length; j++) {
-                const need1 = hedgingNeeds[i];
-                const need2 = hedgingNeeds[j];
-                
-                // Check if currencies are negatively correlated
-                if (this.areNegativelyCorrelated(need1.currency, need2.currency)) {
-                    opportunities.push({
-                        id: uuidv4(),
-                        type: 'natural_hedge',
-                        currencies: [need1.currency, need2.currency],
-                        exposures: [need1.exposure, need2.exposure],
-                        hedgeRatio: Math.min(need1.exposure, need2.exposure) / Math.max(need1.exposure, need2.exposure),
-                        cost: 0,
-                        effectiveness: 0.7,
-                        liquidity: 'high'
-                    });
-                }
-            }
-        }
-        
-        return opportunities;
+    /**
+     * Calculate total risk reduction from all recommendations
+     */
+    calculateTotalRiskReduction(recommendations) {
+        return recommendations.reduce((total, rec) => total + rec.riskReduction, 0);
     }
 
-    areNegativelyCorrelated(currency1, currency2) {
-        // Simplified correlation check
-        const knownNegativeCorrelations = [
-            ['USD', 'EUR'],
-            ['USD', 'GBP'],
-            ['JPY', 'AUD']
-        ];
+    /**
+     * Calculate total cost of all recommendations
+     */
+    calculateTotalCost(recommendations) {
+        return recommendations.reduce((total, rec) => total + rec.cost, 0);
+    }
+
+    /**
+     * Black-Scholes option premium calculation (simplified)
+     */
+    calculateOptionPremium(spot, strike, volatility, timeToExpiry, riskFreeRate = 0.02) {
+        const d1 = (Math.log(spot / strike) + (riskFreeRate + 0.5 * volatility * volatility) * timeToExpiry) /
+                   (volatility * Math.sqrt(timeToExpiry));
+        const d2 = d1 - volatility * Math.sqrt(timeToExpiry);
         
-        return knownNegativeCorrelations.some(pair => 
-            (pair[0] === currency1 && pair[1] === currency2) ||
-            (pair[0] === currency2 && pair[1] === currency1)
-        );
+        // Simplified premium calculation
+        return spot * this.normalCDF(d1) - strike * Math.exp(-riskFreeRate * timeToExpiry) * this.normalCDF(d2);
+    }
+
+    /**
+     * Calculate option delta
+     */
+    calculateOptionDelta(spot, strike, volatility, timeToExpiry) {
+        const d1 = (Math.log(spot / strike) + (0.02 + 0.5 * volatility * volatility) * timeToExpiry) /
+                   (volatility * Math.sqrt(timeToExpiry));
+        return this.normalCDF(d1);
+    }
+
+    /**
+     * Calculate option gamma
+     */
+    calculateOptionGamma(spot, strike, volatility, timeToExpiry) {
+        const d1 = (Math.log(spot / strike) + (0.02 + 0.5 * volatility * volatility) * timeToExpiry) /
+                   (volatility * Math.sqrt(timeToExpiry));
+        return this.normalPDF(d1) / (spot * volatility * Math.sqrt(timeToExpiry));
+    }
+
+    /**
+     * Calculate option vega
+     */
+    calculateOptionVega(spot, strike, volatility, timeToExpiry) {
+        const d1 = (Math.log(spot / strike) + (0.02 + 0.5 * volatility * volatility) * timeToExpiry) /
+                   (volatility * Math.sqrt(timeToExpiry));
+        return spot * this.normalPDF(d1) * Math.sqrt(timeToExpiry);
+    }
+
+    /**
+     * Calculate option theta
+     */
+    calculateOptionTheta(spot, strike, volatility, timeToExpiry) {
+        const d1 = (Math.log(spot / strike) + (0.02 + 0.5 * volatility * volatility) * timeToExpiry) /
+                   (volatility * Math.sqrt(timeToExpiry));
+        const d2 = d1 - volatility * Math.sqrt(timeToExpiry);
+        
+        return -(spot * this.normalPDF(d1) * volatility) / (2 * Math.sqrt(timeToExpiry)) -
+               0.02 * strike * Math.exp(-0.02 * timeToExpiry) * this.normalCDF(d2);
+    }
+
+    /**
+     * Normal cumulative distribution function
+     */
+    normalCDF(x) {
+        return 0.5 * (1 + this.erf(x / Math.sqrt(2)));
+    }
+
+    /**
+     * Normal probability density function
+     */
+    normalPDF(x) {
+        return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+    }
+
+    /**
+     * Error function approximation
+     */
+    erf(x) {
+        const a1 =  0.254829592;
+        const a2 = -0.284496736;
+        const a3 =  1.421413741;
+        const a4 = -1.453152027;
+        const a5 =  1.061405429;
+        const p  =  0.3275911;
+
+        const sign = x >= 0 ? 1 : -1;
+        x = Math.abs(x);
+
+        const t = 1.0 / (1.0 + p * x);
+        const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+
+        return sign * y;
     }
 }
 
