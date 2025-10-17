@@ -231,6 +231,7 @@
 
 - [x] 5.2 Develop expense tracking with currency support
 
+
   - Create expense categorization with currency-specific rules
   - Implement automatic expense currency detection and conversion
   - Build receipt processing with multi-currency OCR capabilities
