@@ -195,7 +195,9 @@
 
 
 
-- [ ] 4.4 Build hedging execution and management
+- [x] 4.4 Build hedging execution and management
+
+
   - Implement automated hedging execution based on risk thresholds
   - Create hedge portfolio management and rebalancing
   - Build hedge accounting and effectiveness documentation
@@ -213,11 +215,9 @@
 
 
 
-- [ ] 5. Multi-Currency Budgeting and Expense Management
+- [x] 5. Multi-Currency Budgeting and Expense Management
   - Create multi-currency budgeting system with FX impact analysis
   - Implement expense tracking and categorization across currencies
-
-
   - Build currency-aware reporting and analytics
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
 
@@ -228,7 +228,9 @@
   - Build budget approval workflows with currency-specific limits
   - _Requirements: 5.1, 5.2_
 
-- [ ] 5.2 Develop expense tracking with currency support
+
+- [x] 5.2 Develop expense tracking with currency support
+
   - Create expense categorization with currency-specific rules
   - Implement automatic expense currency detection and conversion
   - Build receipt processing with multi-currency OCR capabilities

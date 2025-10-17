@@ -3,8 +3,22 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 
+// Import multi-currency services
+const ExpenseTrackingService = require('./multi-currency/budgeting/expense-tracking-service');
+const HedgingExecutionManager = require('./multi-currency/risk/hedging-execution-manager');
+
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Initialize services
+const expenseTrackingService = new ExpenseTrackingService({
+    logger: console
+});
+
+const hedgingExecutionManager = new HedgingExecutionManager({
+    autoExecutionEnabled: true,
+    logger: console
+});
 
 // Middleware
 app.use(cors());
@@ -259,4 +273,211 @@ app.listen(PORT, () => {
   console.log(`📈 Sample API: http://localhost:${PORT}/api/users/1/transactions`);
 });
 
-module.exports = app;
+// Multi-Currency Expense Tracking Endpoints
+
+// Create expense with automatic currency detection
+app.post('/api/users/:userId/expenses', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const expenseData = req.body;
+    
+    const expense = await expenseTrackingService.createExpense(userId, expenseData);
+    
+    res.status(201).json({
+      success: true,
+      expense,
+      message: 'Expense created successfully'
+    });
+  } catch (error) {
+    console.error('Failed to create expense:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get expense analytics
+app.get('/api/users/:userId/expenses/analytics', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const options = {
+      startDate: req.query.startDate ? new Date(req.query.startDate) : undefined,
+      endDate: req.query.endDate ? new Date(req.query.endDate) : undefined,
+      currency: req.query.currency,
+      category: req.query.category
+    };
+    
+    const analytics = await expenseTrackingService.getExpenseAnalytics(userId, options);
+    
+    res.json({
+      success: true,
+      analytics
+    });
+  } catch (error) {
+    console.error('Failed to get expense analytics:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Process receipt OCR
+app.post('/api/expenses/:expenseId/process-receipt', async (req, res) => {
+  try {
+    const expenseId = req.params.expenseId;
+    
+    // Mock expense for demo
+    const mockExpense = {
+      id: expenseId,
+      receiptUrl: req.body.receiptUrl,
+      originalCurrency: 'USD',
+      amount: 25.50,
+      merchant: 'Starbucks'
+    };
+    
+    const result = await expenseTrackingService.processReceiptOCR(mockExpense);
+    
+    res.json({
+      success: result.success,
+      result
+    });
+  } catch (error) {
+    console.error('Failed to process receipt:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Hedging Execution Endpoints
+
+// Execute hedging strategy
+app.post('/api/users/:userId/hedging/execute', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const { strategyId, options } = req.body;
+    
+    const result = await hedgingExecutionManager.executeHedgingStrategy(userId, strategyId, options);
+    
+    res.json({
+      success: true,
+      result,
+      message: 'Hedging strategy executed successfully'
+    });
+  } catch (error) {
+    console.error('Failed to execute hedging strategy:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Perform hedge rebalancing
+app.post('/api/users/:userId/hedging/rebalance', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const trigger = req.body.trigger || 'manual';
+    
+    const result = await hedgingExecutionManager.performHedgeRebalancing(userId, trigger);
+    
+    res.json({
+      success: true,
+      result,
+      message: 'Hedge rebalancing completed'
+    });
+  } catch (error) {
+    console.error('Failed to perform hedge rebalancing:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Get hedge performance report
+app.get('/api/hedges/:hedgeId/performance', async (req, res) => {
+  try {
+    const hedgeId = req.params.hedgeId;
+    
+    const performance = await hedgingExecutionManager.getHedgePerformanceReport(hedgeId);
+    
+    res.json({
+      success: true,
+      performance
+    });
+  } catch (error) {
+    console.error('Failed to get hedge performance:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Terminate hedge
+app.post('/api/hedges/:hedgeId/terminate', async (req, res) => {
+  try {
+    const hedgeId = req.params.hedgeId;
+    const reason = req.body.reason || 'manual';
+    
+    const result = await hedgingExecutionManager.terminateHedge(hedgeId, reason);
+    
+    res.json({
+      success: true,
+      result,
+      message: 'Hedge terminated successfully'
+    });
+  } catch (error) {
+    console.error('Failed to terminate hedge:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Demo endpoints for testing
+app.get('/api/demo/expense-tracking', (req, res) => {
+  res.json({
+    message: 'Multi-Currency Expense Tracking Demo',
+    features: [
+      'Automatic currency detection from location, merchant, and description',
+      'Multi-currency OCR receipt processing',
+      'Currency-specific categorization rules',
+      'Real-time currency conversion',
+      'Comprehensive expense analytics',
+      'Budget validation and tracking'
+    ],
+    endpoints: [
+      'POST /api/users/:userId/expenses - Create expense',
+      'GET /api/users/:userId/expenses/analytics - Get analytics',
+      'POST /api/expenses/:expenseId/process-receipt - Process receipt OCR'
+    ]
+  });
+});
+
+app.get('/api/demo/hedging-execution', (req, res) => {
+  res.json({
+    message: 'Hedging Execution and Management Demo',
+    features: [
+      'Automated hedging strategy execution',
+      'Multi-instrument hedge portfolio management',
+      'Real-time hedge effectiveness testing',
+      'Automatic hedge rebalancing',
+      'Comprehensive hedge accounting',
+      'Risk-based hedge termination'
+    ],
+    endpoints: [
+      'POST /api/users/:userId/hedging/execute - Execute hedging strategy',
+      'POST /api/users/:userId/hedging/rebalance - Perform rebalancing',
+      'GET /api/hedges/:hedgeId/performance - Get performance report',
+      'POST /api/hedges/:hedgeId/terminate - Terminate hedge'
+    ]
+  });
+});
+module.ex
+ports = app;

@@ -58,9 +58,10 @@
   },
   "homepage": "https://github.com/yourusername/finbot-v4#readme",
   "dependencies": {
-    "express": "^4.18.2",
     "cors": "^2.8.5",
-    "nodemon": "^3.0.1"
+    "express": "^4.18.2",
+    "nodemon": "^3.0.1",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.1",
