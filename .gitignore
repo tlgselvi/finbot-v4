@@ -117,3 +117,6 @@ venv.bak/
 # Temporary files
 *.tmp
 *.temp
+
+# Ignore embedded repositories
+finbotv3/
