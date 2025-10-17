@@ -1,244 +1,298 @@
-# FinBot v4 🚀
+# FinBot AI Financial Analytics
 
-**Gelişmiş Finansal Yönetim Sistemi - Onay İş Akışları ile**
+🤖 **AI-Powered Financial Analytics Platform** - Comprehensive financial management system with machine learning insights, real-time analytics, and multi-platform support.
 
-FinBot v4, kurumsal finansal işlemler için kapsamlı onay sistemi, risk değerlendirmesi ve audit trail özellikleri sunan gelişmiş bir finansal yönetim platformudur.
+## 🚀 Features
 
-## 🌟 Yeni Özellikler (v4)
+### 🧠 AI-Powered Analytics
+- **Machine Learning Models**: Spending prediction, anomaly detection, and risk assessment
+- **Intelligent Insights**: Personalized financial recommendations
+- **Automated Optimization**: Budget and goal optimization suggestions
+- **Predictive Analytics**: Future spending and savings forecasting
 
-### 🔐 Çok Katmanlı Onay Sistemi
-- **Esnek Onay Kuralları**: İşlem tutarı, türü ve kullanıcı rolüne göre otomatik onay seviyesi belirleme
-- **Paralel/Sıralı Onaylar**: Karmaşık onay hiyerarşileri için esnek iş akışları
-- **Delegasyon ve Eskalasyon**: Onaylayıcı yokluğunda otomatik yönlendirme
-- **Acil Durum Override**: Yetkili kullanıcılar için audit kaydı ile bypass seçeneği
+### 📊 Comprehensive Dashboard
+- **Real-time Analytics**: Live financial data visualization
+- **Interactive Charts**: Responsive charts with drill-down capabilities
+- **Multi-currency Support**: Global currency handling and conversion
+- **Custom Reporting**: Personalized financial reports
 
-### 🛡️ Risk Değerlendirme ve Fraud Tespiti
-- **Gerçek Zamanlı Risk Skoru**: ML tabanlı risk analizi
-- **Davranış Analizi**: Kullanıcı alışkanlıklarına göre anomali tespiti
-- **Coğrafi Kontrol**: IP ve lokasyon bazlı güvenlik kontrolleri
-- **Hız Kontrolleri**: İşlem sıklığı ve tutar bazlı limitler
+### 📱 Multi-Platform Support
+- **Web Application**: React/Next.js responsive web interface
+- **Mobile App**: React Native iOS/Android application
+- **Progressive Web App**: Offline-first mobile web experience
+- **API Integration**: RESTful APIs for third-party integrations
 
-### 📊 Kapsamlı Audit ve Raporlama
-- **Değiştirilemez Audit Kayıtları**: Dijital imza ile korumalı log sistemi
-- **Compliance Raporları**: Otomatik düzenleyici raporlama
-- **Gerçek Zamanlı İzleme**: Canlı dashboard ve alertler
-- **Veri Arşivleme**: Yasal saklama sürelerine uygun otomatik arşivleme
+### 🔐 Security & Privacy
+- **Biometric Authentication**: Fingerprint and Face ID support
+- **End-to-end Encryption**: Secure data transmission and storage
+- **Privacy Controls**: Granular data sharing preferences
+- **Audit Logging**: Comprehensive security monitoring
 
-### 🔔 Akıllı Bildirim Sistemi
-- **Çoklu Kanal**: Email, SMS, in-app, Slack/Teams entegrasyonu
-- **Öncelik Bazlı**: Risk seviyesine göre bildirim urgency'si
-- **Özelleştirilebilir Şablonlar**: Kurumsal branding ile uyumlu
-- **Delivery Tracking**: Bildirim teslimat durumu takibi
+## 🏗️ Architecture
 
-## 🏗️ Teknik Mimari
+### Backend Services
+- **Data Pipeline**: Kafka-based streaming with Apache Airflow
+- **Feature Store**: Feast with PostgreSQL and Redis backends
+- **ML Pipeline**: TensorFlow/PyTorch models with MLflow tracking
+- **API Gateway**: Node.js/Express with GraphQL support
 
-### Mikroservis Mimarisi
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Frontend      │    │   API Gateway   │    │   Auth Service  │
-│   (React/Next)  │◄──►│   (Kong/Istio)  │◄──►│   (JWT/OAuth)   │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│ Approval Engine │    │ Risk Assessment │    │ Notification    │
-│ (Node.js/Redis) │    │ (Python/ML)     │    │ (Queue/Bull)    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         └───────────────────────┼───────────────────────┘
-                                 ▼
-                    ┌─────────────────┐
-                    │   PostgreSQL    │
-                    │   (Primary DB)  │
-                    └─────────────────┘
-```
+### Frontend Applications
+- **Web Dashboard**: React 18 with TypeScript and Tailwind CSS
+- **Mobile App**: React Native with Expo and native performance
+- **Component Library**: Reusable UI components with Storybook
 
-### Teknoloji Stack
-- **Backend**: Node.js, TypeScript, Fastify
-- **Frontend**: React, Next.js, TailwindCSS
-- **Database**: PostgreSQL, Redis
-- **ORM**: Drizzle ORM
-- **Message Queue**: Redis/Bull
-- **ML Engine**: Python, scikit-learn
-- **Monitoring**: Prometheus, Grafana, Jaeger
-- **Container**: Docker, Kubernetes
-- **CI/CD**: GitHub Actions
-- **Security**: Istio Service Mesh, Vault
+### Infrastructure
+- **Containerization**: Docker with Kubernetes orchestration
+- **Cloud Services**: AWS/GCP with auto-scaling capabilities
+- **Monitoring**: Prometheus and Grafana dashboards
+- **CI/CD**: Automated testing and deployment pipelines
 
-## 🚀 Hızlı Başlangıç
+## 🛠️ Technology Stack
 
-### Gereksinimler
-- Node.js 18+
-- Docker & Docker Compose
-- PostgreSQL 15+
-- Redis 7+
+### Frontend
+- **React 18** - Modern React with hooks and concurrent features
+- **Next.js 14** - Full-stack React framework with SSR/SSG
+- **TypeScript** - Type-safe JavaScript development
+- **Tailwind CSS** - Utility-first CSS framework
+- **React Native** - Cross-platform mobile development
+- **Expo** - React Native development platform
 
-### Kurulum
+### Backend
+- **Node.js** - JavaScript runtime for server-side development
+- **Express.js** - Web application framework
+- **GraphQL** - Query language for APIs
+- **PostgreSQL** - Primary database for structured data
+- **Redis** - In-memory data structure store
+- **MongoDB** - Document database for flexible data
 
+### Machine Learning
+- **Python** - Primary ML development language
+- **TensorFlow** - Deep learning framework
+- **PyTorch** - Machine learning library
+- **Scikit-learn** - Machine learning algorithms
+- **Pandas** - Data manipulation and analysis
+- **NumPy** - Numerical computing
+
+### DevOps & Infrastructure
+- **Docker** - Containerization platform
+- **Kubernetes** - Container orchestration
+- **AWS/GCP** - Cloud infrastructure
+- **Terraform** - Infrastructure as code
+- **GitHub Actions** - CI/CD automation
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js 18+ and npm/yarn
+- Python 3.9+ with pip
+- Docker and Docker Compose
+- Git
+
+### Installation
+
+1. **Clone the repository**
 ```bash
-# Repository'yi klonla
-git clone https://github.com/yourusername/finbot-v4.git
-cd finbot-v4
+git clone https://github.com/yourusername/finbot-ai-analytics.git
+cd finbot-ai-analytics
+```
 
-# Bağımlılıkları yükle
+2. **Install dependencies**
+```bash
+# Frontend dependencies
 npm install
 
-# Environment dosyasını oluştur
-cp .env.example .env
+# Backend dependencies
+cd backend && npm install
 
-# Docker ile servisleri başlat
+# ML dependencies
+cd ml-pipeline && pip install -r requirements.txt
+```
+
+3. **Environment setup**
+```bash
+# Copy environment templates
+cp .env.example .env
+cp backend/.env.example backend/.env
+
+# Configure your environment variables
+```
+
+4. **Start development servers**
+```bash
+# Start all services with Docker
 docker-compose up -d
 
-# Database migration'ları çalıştır
-npm run db:migrate
-
-# Test verilerini yükle
-npm run db:seed
-
-# Development server'ı başlat
-npm run dev
+# Or start individually
+npm run dev              # Frontend
+npm run dev:backend      # Backend API
+npm run dev:mobile       # Mobile app
+python ml-pipeline/main.py  # ML services
 ```
 
-### Test Ortamı
+### Docker Deployment
 
 ```bash
-# Test namespace'ini oluştur
-kubectl apply -f k8s/test-environment/
+# Build and run with Docker Compose
+docker-compose up --build
 
-# Test konfigürasyonunu uygula
-kubectl apply -f config/test-environment.yaml
-
-# Test deployment'ını başlat
-kubectl apply -f k8s/deployments/test/
+# Or build individual services
+docker build -t finbot-frontend .
+docker build -t finbot-backend ./backend
+docker build -t finbot-ml ./ml-pipeline
 ```
 
-## 📋 Özellik Durumu
+## 📱 Mobile Development
 
-### ✅ Tamamlanan Modüller
-- [x] Database Schema ve Core Infrastructure
-- [x] Approval Rule Engine
-- [x] Workflow Orchestrator
-- [x] Risk Assessment Engine
-- [x] Notification Service
-- [x] Frontend Dashboard
-- [x] Admin Configuration Interface
-- [x] Audit Trail ve Reporting
-- [x] Security Hardening
-- [x] Production Deployment
+### React Native Setup
+```bash
+# Install Expo CLI
+npm install -g @expo/cli
 
-### 🔄 Geliştirme Aşamasında
-- [ ] Advanced ML Models
-- [ ] Mobile Application
-- [ ] Third-party Integrations
-- [ ] Advanced Analytics
+# Start mobile development
+cd src/mobile
+expo start
+```
 
-## 🔒 Güvenlik
+### Building for Production
+```bash
+# iOS build
+expo build:ios
 
-### Güvenlik Önlemleri
-- **Encryption**: AES-256 ile veri şifreleme
-- **Authentication**: JWT + MFA
-- **Authorization**: Role-based access control
-- **Network Security**: Istio service mesh
-- **Container Security**: Pod Security Standards
-- **Runtime Security**: Falco monitoring
-- **Secrets Management**: Vault integration
-
-### Compliance
-- **SOX**: Sarbanes-Oxley uyumluluğu
-- **PCI DSS**: Ödeme kartı veri güvenliği
-- **GDPR**: Kişisel veri koruma
-- **ISO 27001**: Bilgi güvenliği yönetimi
-
-## 📊 Monitoring ve Observability
-
-### Metrics
-- **Application**: Response time, error rate, throughput
-- **Business**: Approval rates, processing times, fraud detection
-- **Infrastructure**: CPU, memory, disk, network
-
-### Logging
-- **Structured Logging**: JSON format with correlation IDs
-- **Centralized**: ELK Stack (Elasticsearch, Logstash, Kibana)
-- **Retention**: Configurable retention policies
-
-### Tracing
-- **Distributed Tracing**: Jaeger integration
-- **Request Flow**: End-to-end transaction tracking
-- **Performance**: Bottleneck identification
+# Android build
+expo build:android
+```
 
 ## 🧪 Testing
 
-### Test Stratejisi
+### Running Tests
 ```bash
-# Unit tests
-npm run test:unit
+# Run all tests
+npm test
 
-# Integration tests
-npm run test:integration
+# Run specific test suites
+npm run test:frontend
+npm run test:backend
+npm run test:mobile
+npm run test:ml
 
-# E2E tests
-npm run test:e2e
-
-# Performance tests
-npm run test:performance
-
-# Security tests
-npm run test:security
+# Run with coverage
+npm run test:coverage
 ```
 
-### Test Coverage
-- **Unit Tests**: 90%+ coverage
-- **Integration Tests**: Critical paths
-- **E2E Tests**: User workflows
-- **Performance Tests**: Load testing
-- **Security Tests**: Vulnerability scanning
+### Test Types
+- **Unit Tests**: Component and function testing
+- **Integration Tests**: API and service integration
+- **E2E Tests**: Full user workflow testing
+- **Performance Tests**: Load and stress testing
+- **Security Tests**: Vulnerability and penetration testing
 
-## 📚 Dokümantasyon
+## 📊 ML Pipeline
 
-### API Dokümantasyonu
-- **OpenAPI**: `/docs/api` - Interactive API documentation
-- **Postman**: Collection available in `/docs/postman`
+### Model Training
+```bash
+# Train spending prediction model
+python ml-pipeline/train_spending_model.py
 
-### Kullanıcı Kılavuzları
-- **Admin Guide**: `/docs/admin-guide.md`
-- **User Manual**: `/docs/user-manual.md`
-- **Developer Guide**: `/docs/developer-guide.md`
+# Train anomaly detection model
+python ml-pipeline/train_anomaly_model.py
 
-### Deployment Kılavuzları
-- **Production Setup**: `/docs/production-setup.md`
-- **Kubernetes Guide**: `/docs/kubernetes-guide.md`
-- **Security Hardening**: `/docs/security-guide.md`
+# Train risk assessment model
+python ml-pipeline/train_risk_model.py
+```
 
-## 🤝 Katkıda Bulunma
+### Model Deployment
+```bash
+# Deploy models to production
+python ml-pipeline/deploy_models.py
+
+# Monitor model performance
+python ml-pipeline/monitor_models.py
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+```bash
+# Database
+DATABASE_URL=postgresql://user:pass@localhost:5432/finbot
+REDIS_URL=redis://localhost:6379
+
+# API Keys
+OPENAI_API_KEY=your_openai_key
+PLAID_CLIENT_ID=your_plaid_id
+PLAID_SECRET=your_plaid_secret
+
+# Security
+JWT_SECRET=your_jwt_secret
+ENCRYPTION_KEY=your_encryption_key
+
+# External Services
+AWS_ACCESS_KEY_ID=your_aws_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret
+```
+
+## 📈 Performance
+
+### Benchmarks
+- **Frontend**: < 2s initial load, < 100ms interactions
+- **Backend**: < 200ms API response times
+- **Mobile**: < 1s app startup, 60fps animations
+- **ML Models**: < 500ms inference time
+
+### Optimization Features
+- **Code Splitting**: Lazy loading and dynamic imports
+- **Caching**: Multi-level caching strategy
+- **CDN**: Global content delivery
+- **Database**: Query optimization and indexing
+
+## 🔒 Security
+
+### Security Features
+- **Authentication**: Multi-factor authentication
+- **Authorization**: Role-based access control
+- **Encryption**: AES-256 data encryption
+- **Monitoring**: Real-time security monitoring
+- **Compliance**: GDPR and PCI DSS compliance
+
+### Security Best Practices
+- Regular security audits
+- Dependency vulnerability scanning
+- Secure coding practices
+- Data privacy by design
+
+## 🤝 Contributing
 
 ### Development Workflow
 1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
+2. Create a feature branch
+3. Make your changes
+4. Add tests for new features
+5. Run the test suite
+6. Submit a pull request
 
 ### Code Standards
-- **ESLint**: Code quality rules
+- **ESLint**: JavaScript/TypeScript linting
 - **Prettier**: Code formatting
-- **Husky**: Pre-commit hooks
-- **Conventional Commits**: Commit message format
+- **Husky**: Git hooks for quality checks
+- **Conventional Commits**: Standardized commit messages
 
-## 📄 Lisans
+## 📄 License
 
-Bu proje MIT lisansı altında lisanslanmıştır. Detaylar için [LICENSE](LICENSE) dosyasına bakınız.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 📞 İletişim
+## 🙏 Acknowledgments
 
-- **Email**: finbot-team@company.com
-- **Slack**: #finbot-v4
-- **Issues**: GitHub Issues
-- **Discussions**: GitHub Discussions
+- **Open Source Libraries**: Thanks to all the amazing open source projects
+- **Community**: Special thanks to our contributors and users
+- **Inspiration**: Built with passion for financial technology
 
-## 🙏 Teşekkürler
+## 📞 Support
 
-FinBot v4'ün geliştirilmesinde katkıda bulunan tüm ekip üyelerine teşekkürler!
+- **Documentation**: [docs.finbot.com](https://docs.finbot.com)
+- **Issues**: [GitHub Issues](https://github.com/yourusername/finbot-ai-analytics/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/yourusername/finbot-ai-analytics/discussions)
+- **Email**: support@finbot.com
 
 ---
 
-**FinBot v4** - Güvenli, Ölçeklenebilir, Akıllı Finansal Yönetim 💰
+**Made with ❤️ by the FinBot Team**
