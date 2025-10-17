@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FinBot v4 - Demo Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body class="bg-gray-50">
+    <!-- Header -->
+    <header class="bg-blue-600 text-white shadow-lg">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <i class="fas fa-robot text-2xl"></i>
+                    <h1 class="text-2xl font-bold">FinBot v4</h1>
+                    <span class="bg-blue-500 px-2 py-1 rounded text-sm">DEMO</span>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <span class="text-sm">Welcome, John Doe</span>
+                    <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                        <i class="fas fa-user text-sm"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-4 py-8">
+        <!-- Status Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <!-- Balance Card -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm">Total Balance</p>
+                        <p class="text-2xl font-bold text-green-600" id="totalBalance">$15,420.50</p>
+                    </div>
+                    <div class="bg-green-100 p-3 rounded-full">
+                        <i class="fas fa-wallet text-green-600"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pending Approvals -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm">Pending Approvals</p>
+                        <p class="text-2xl font-bold text-orange-600" id="pendingApprovals">1</p>
+                    </div>
+                    <div class="bg-orange-100 p-3 rounded-full">
+                        <i class="fas fa-clock text-orange-600"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Insights -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm">AI Insights</p>
+                        <p class="text-2xl font-bold text-purple-600" id="aiInsights">2</p>
+                    </div>
+                    <div class="bg-purple-100 p-3 rounded-full">
+                        <i class="fas fa-brain text-purple-600"></i>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Currencies -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-600 text-sm">Base Currency</p>
+                        <p class="text-2xl font-bold text-blue-600">USD</p>
+                    </div>
+                    <div class="bg-blue-100 p-3 rounded-full">
+                        <i class="fas fa-exchange-alt text-blue-600"></i>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Dashboard Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Left Column -->
+            <div class="lg:col-span-2 space-y-8">
+                <!-- Recent Transactions -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-list mr-2 text-gray-600"></i>
+                        Recent Transactions
+                    </h2>
+                    <div id="transactionsList" class="space-y-3">
+                        <!-- Transactions will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Spending Chart -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-chart-line mr-2 text-gray-600"></i>
+                        Spending Overview
+                    </h2>
+                    <canvas id="spendingChart" width="400" height="200"></canvas>
+                </div>
+            </div>
+
+            <!-- Right Column -->
+            <div class="space-y-8">
+                <!-- Approval System -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-check-circle mr-2 text-gray-600"></i>
+                        Approval System
+                    </h2>
+                    <div id="approvalsList">
+                        <!-- Approvals will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Currency Exchange -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-coins mr-2 text-gray-600"></i>
+                        Currency Exchange
+                    </h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+                            <input type="number" id="convertAmount" class="w-full border rounded-md px-3 py-2" placeholder="100" value="100">
+                        </div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">From</label>
+                                <select id="fromCurrency" class="w-full border rounded-md px-3 py-2">
+                                    <option value="USD">USD</option>
+                                    <option value="EUR">EUR</option>
+                                    <option value="GBP">GBP</option>
+                                    <option value="TRY">TRY</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">To</label>
+                                <select id="toCurrency" class="w-full border rounded-md px-3 py-2">
+                                    <option value="EUR">EUR</option>
+                                    <option value="USD">USD</option>
+                                    <option value="GBP">GBP</option>
+                                    <option value="TRY">TRY</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button onclick="convertCurrency()" class="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition">
+                            Convert
+                        </button>
+                        <div id="conversionResult" class="text-center text-lg font-semibold text-green-600"></div>
+                    </div>
+                </div>
+
+                <!-- AI Insights -->
+                <div class="bg-white rounded-lg shadow-md p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <i class="fas fa-lightbulb mr-2 text-gray-600"></i>
+                        AI Insights
+                    </h2>
+                    <div id="insightsList">
+                        <!-- Insights will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 text-white py-8 mt-12">
+        <div class="container mx-auto px-4 text-center">
+            <p>&copy; 2024 FinBot v4. Advanced Financial Management System.</p>
+            <p class="text-sm text-gray-400 mt-2">Demo Version - Features: Approval System, Multi-Currency, AI Analytics</p>
+        </div>
+    </footer>
+
+    <script>
+        // API Base URL
+        const API_BASE = '';
+
+        // Load dashboard data
+        async function loadDashboard() {
+            try {
+                await Promise.all([
+                    loadTransactions(),
+                    loadApprovals(),
+                    loadInsights(),
+                    createSpendingChart()
+                ]);
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+            }
+        }
+
+        // Load transactions
+        async function loadTransactions() {
+            try {
+                const response = await fetch(`${API_BASE}/api/users/1/transactions`);
+                const data = await response.json();
+                
+                const transactionsList = document.getElementById('transactionsList');
+                transactionsList.innerHTML = data.transactions.map(transaction => `
+                    <div class="flex items-center justify-between p-3 border rounded-lg">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full flex items-center justify-center ${transaction.amount > 0 ? 'bg-green-100' : 'bg-red-100'}">
+                                <i class="fas ${transaction.amount > 0 ? 'fa-arrow-up text-green-600' : 'fa-arrow-down text-red-600'}"></i>
+                            </div>
+                            <div>
+                                <p class="font-medium">${transaction.description}</p>
+                                <p class="text-sm text-gray-600">${transaction.category}</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <p class="font-semibold ${transaction.amount > 0 ? 'text-green-600' : 'text-red-600'}">
+                                ${transaction.amount > 0 ? '+' : ''}$${Math.abs(transaction.amount).toFixed(2)}
+                            </p>
+                            <p class="text-sm text-gray-600">${new Date(transaction.date).toLocaleDateString()}</p>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading transactions:', error);
+            }
+        }
+
+        // Load approvals
+        async function loadApprovals() {
+            try {
+                const response = await fetch(`${API_BASE}/api/approvals/pending`);
+                const data = await response.json();
+                
+                const approvalsList = document.getElementById('approvalsList');
+                if (data.approvals.length === 0) {
+                    approvalsList.innerHTML = '<p class="text-gray-600 text-center">No pending approvals</p>';
+                    return;
+                }
+                
+                approvalsList.innerHTML = data.approvals.map(approval => `
+                    <div class="border rounded-lg p-4 mb-3">
+                        <div class="flex justify-between items-start mb-2">
+                            <h3 class="font-medium">${approval.description}</h3>
+                            <span class="bg-orange-100 text-orange-800 px-2 py-1 rounded text-sm">${approval.status}</span>
+                        </div>
+                        <p class="text-lg font-semibold text-gray-800">$${approval.amount.toFixed(2)}</p>
+                        <p class="text-sm text-gray-600 mb-3">Approvals: ${approval.currentApprovals}/${approval.requiredApprovals}</p>
+                        <button onclick="approveTransaction('${approval.id}')" class="w-full bg-green-600 text-white py-2 rounded hover:bg-green-700 transition">
+                            Approve
+                        </button>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading approvals:', error);
+            }
+        }
+
+        // Load AI insights
+        async function loadInsights() {
+            try {
+                const response = await fetch(`${API_BASE}/api/analytics/insights/1`);
+                const data = await response.json();
+                
+                const insightsList = document.getElementById('insightsList');
+                insightsList.innerHTML = data.insights.map(insight => `
+                    <div class="border rounded-lg p-4 mb-3">
+                        <div class="flex items-start justify-between mb-2">
+                            <h3 class="font-medium">${insight.title}</h3>
+                            <span class="bg-${insight.impact === 'high' ? 'red' : insight.impact === 'medium' ? 'yellow' : 'green'}-100 text-${insight.impact === 'high' ? 'red' : insight.impact === 'medium' ? 'yellow' : 'green'}-800 px-2 py-1 rounded text-xs">${insight.impact}</span>
+                        </div>
+                        <p class="text-sm text-gray-600 mb-2">${insight.description}</p>
+                        <div class="text-xs text-gray-500">
+                            Confidence: ${Math.round(insight.confidence * 100)}%
+                        </div>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading insights:', error);
+            }
+        }
+
+        // Create spending chart
+        function createSpendingChart() {
+            const ctx = document.getElementById('spendingChart').getContext('2d');
+            new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Food & Dining', 'Housing', 'Transportation', 'Entertainment', 'Other'],
+                    datasets: [{
+                        data: [850, 1200, 300, 200, 150],
+                        backgroundColor: [
+                            '#FF6384',
+                            '#36A2EB',
+                            '#FFCE56',
+                            '#4BC0C0',
+                            '#9966FF'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        }
+
+        // Approve transaction
+        async function approveTransaction(approvalId) {
+            try {
+                const response = await fetch(`${API_BASE}/api/approvals/${approvalId}/approve`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (response.ok) {
+                    alert('Approval processed successfully!');
+                    loadApprovals(); // Reload approvals
+                } else {
+                    alert('Error processing approval: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Error approving transaction:', error);
+                alert('Error processing approval');
+            }
+        }
+
+        // Convert currency
+        async function convertCurrency() {
+            const amount = document.getElementById('convertAmount').value;
+            const fromCurrency = document.getElementById('fromCurrency').value;
+            const toCurrency = document.getElementById('toCurrency').value;
+            
+            if (!amount || amount <= 0) {
+                alert('Please enter a valid amount');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/currency/convert`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        fromCurrency,
+                        toCurrency,
+                        amount: parseFloat(amount)
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    document.getElementById('conversionResult').innerHTML = 
+                        `${data.convertedAmount} ${data.convertedCurrency}`;
+                } else {
+                    alert('Error converting currency: ' + data.error);
+                }
+            } catch (error) {
+                console.error('Error converting currency:', error);
+                alert('Error converting currency');
+            }
+        }
+
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', loadDashboard);
+    </script>
+</body>
+</html>

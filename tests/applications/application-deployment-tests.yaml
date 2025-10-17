@@ -1,0 +1,822 @@
+# FinBot v4 - Application Deployment Tests
+# Comprehensive tests for application startup, health checks, and service communication
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: application-deployment-tests
+  namespace: finbot-testing
+  labels:
+    app: deployment-tests
+    component: testing
+data:
+  test-runner.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "🚀 Starting FinBot Application Deployment Tests"
+    echo "================================================"
+    
+    # Test Configuration
+    NAMESPACE="production"
+    TIMEOUT=300  # 5 minutes
+    RETRY_INTERVAL=10
+    
+    # Color codes for output
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    NC='\033[0m' # No Color
+    
+    # Helper functions
+    log_info() {
+        echo -e "${GREEN}[INFO]${NC} $1"
+    }
+    
+    log_warn() {
+        echo -e "${YELLOW}[WARN]${NC} $1"
+    }
+    
+    log_error() {
+        echo -e "${RED}[ERROR]${NC} $1"
+    }
+    
+    wait_for_deployment() {
+        local deployment=$1
+        local namespace=$2
+        local timeout=$3
+        
+        log_info "Waiting for deployment $deployment to be ready..."
+        
+        if kubectl wait --for=condition=available --timeout=${timeout}s deployment/$deployment -n $namespace; then
+            log_info "✅ Deployment $deployment is ready"
+            return 0
+        else
+            log_error "❌ Deployment $deployment failed to become ready within ${timeout}s"
+            return 1
+        fi
+    }
+    
+    test_pod_startup() {
+        local app=$1
+        local namespace=$2
+        
+        log_info "Testing pod startup for $app..."
+        
+        # Get pod names
+        local pods=$(kubectl get pods -n $namespace -l app=$app -o jsonpath='{.items[*].metadata.name}')
+        
+        if [ -z "$pods" ]; then
+            log_error "❌ No pods found for app $app"
+            return 1
+        fi
+        
+        for pod in $pods; do
+            log_info "Checking pod $pod..."
+            
+            # Check pod status
+            local status=$(kubectl get pod $pod -n $namespace -o jsonpath='{.status.phase}')
+            if [ "$status" != "Running" ]; then
+                log_error "❌ Pod $pod is not running (status: $status)"
+                kubectl describe pod $pod -n $namespace
+                return 1
+            fi
+            
+            # Check container readiness
+            local ready=$(kubectl get pod $pod -n $namespace -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')
+            if [ "$ready" != "True" ]; then
+                log_error "❌ Pod $pod is not ready"
+                kubectl describe pod $pod -n $namespace
+                return 1
+            fi
+            
+            log_info "✅ Pod $pod is running and ready"
+        done
+        
+        return 0
+    }
+    
+    test_health_endpoints() {
+        local service=$1
+        local namespace=$2
+        local port=$3
+        
+        log_info "Testing health endpoints for $service..."
+        
+        # Port forward to service
+        kubectl port-forward -n $namespace svc/$service $port:$port &
+        local pf_pid=$!
+        sleep 5
+        
+        # Test health endpoint
+        if curl -f -s http://localhost:$port/health > /dev/null; then
+            log_info "✅ Health endpoint for $service is responding"
+        else
+            log_error "❌ Health endpoint for $service is not responding"
+            kill $pf_pid 2>/dev/null || true
+            return 1
+        fi
+        
+        # Test readiness endpoint
+        if curl -f -s http://localhost:$port/ready > /dev/null; then
+            log_info "✅ Readiness endpoint for $service is responding"
+        else
+            log_error "❌ Readiness endpoint for $service is not responding"
+            kill $pf_pid 2>/dev/null || true
+            return 1
+        fi
+        
+        # Test metrics endpoint
+        if curl -f -s http://localhost:$port/metrics > /dev/null; then
+            log_info "✅ Metrics endpoint for $service is responding"
+        else
+            log_warn "⚠️ Metrics endpoint for $service is not responding"
+        fi
+        
+        # Cleanup
+        kill $pf_pid 2>/dev/null || true
+        return 0
+    }
+    
+    test_service_discovery() {
+        local service=$1
+        local namespace=$2
+        
+        log_info "Testing service discovery for $service..."
+        
+        # Check if service exists
+        if ! kubectl get svc $service -n $namespace > /dev/null 2>&1; then
+            log_error "❌ Service $service not found in namespace $namespace"
+            return 1
+        fi
+        
+        # Get service endpoints
+        local endpoints=$(kubectl get endpoints $service -n $namespace -o jsonpath='{.subsets[*].addresses[*].ip}')
+        
+        if [ -z "$endpoints" ]; then
+            log_error "❌ No endpoints found for service $service"
+            return 1
+        fi
+        
+        log_info "✅ Service $service has endpoints: $endpoints"
+        return 0
+    }
+    
+    test_inter_service_communication() {
+        log_info "Testing inter-service communication..."
+        
+        # Create a test pod for network testing
+        kubectl run test-pod --image=curlimages/curl:latest --rm -i --restart=Never -n $NAMESPACE -- sh -c "
+            echo 'Testing API to Database connection...'
+            if curl -f -s http://finbot-api.production.svc.cluster.local:3001/health/database; then
+                echo '✅ API can connect to database'
+            else
+                echo '❌ API cannot connect to database'
+                exit 1
+            fi
+            
+            echo 'Testing API to Redis connection...'
+            if curl -f -s http://finbot-api.production.svc.cluster.local:3001/health/redis; then
+                echo '✅ API can connect to Redis'
+            else
+                echo '❌ API cannot connect to Redis'
+                exit 1
+            fi
+            
+            echo 'Testing Web to API connection...'
+            if curl -f -s http://finbot-api.production.svc.cluster.local:3001/health; then
+                echo '✅ Web can connect to API'
+            else
+                echo '❌ Web cannot connect to API'
+                exit 1
+            fi
+        "
+        
+        if [ $? -eq 0 ]; then
+            log_info "✅ Inter-service communication tests passed"
+            return 0
+        else
+            log_error "❌ Inter-service communication tests failed"
+            return 1
+        fi
+    }
+    
+    test_autoscaling_behavior() {
+        local deployment=$1
+        local namespace=$2
+        
+        log_info "Testing autoscaling behavior for $deployment..."
+        
+        # Check if HPA exists
+        if ! kubectl get hpa ${deployment}-hpa -n $namespace > /dev/null 2>&1; then
+            log_error "❌ HPA ${deployment}-hpa not found"
+            return 1
+        fi
+        
+        # Get current replica count
+        local current_replicas=$(kubectl get deployment $deployment -n $namespace -o jsonpath='{.status.replicas}')
+        local min_replicas=$(kubectl get hpa ${deployment}-hpa -n $namespace -o jsonpath='{.spec.minReplicas}')
+        local max_replicas=$(kubectl get hpa ${deployment}-hpa -n $namespace -o jsonpath='{.spec.maxReplicas}')
+        
+        log_info "Current replicas: $current_replicas, Min: $min_replicas, Max: $max_replicas"
+        
+        # Check if current replicas are within bounds
+        if [ $current_replicas -lt $min_replicas ] || [ $current_replicas -gt $max_replicas ]; then
+            log_error "❌ Current replica count ($current_replicas) is outside HPA bounds ($min_replicas-$max_replicas)"
+            return 1
+        fi
+        
+        # Check HPA status
+        local hpa_status=$(kubectl get hpa ${deployment}-hpa -n $namespace -o jsonpath='{.status.conditions[?(@.type=="AbleToScale")].status}')
+        if [ "$hpa_status" != "True" ]; then
+            log_error "❌ HPA is not able to scale"
+            kubectl describe hpa ${deployment}-hpa -n $namespace
+            return 1
+        fi
+        
+        log_info "✅ Autoscaling configuration is valid"
+        return 0
+    }
+    
+    test_resource_limits() {
+        local deployment=$1
+        local namespace=$2
+        
+        log_info "Testing resource limits for $deployment..."
+        
+        # Get pod resource requests and limits
+        local pods=$(kubectl get pods -n $namespace -l app=$deployment -o jsonpath='{.items[*].metadata.name}')
+        
+        for pod in $pods; do
+            log_info "Checking resource limits for pod $pod..."
+            
+            # Check CPU requests
+            local cpu_request=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.containers[0].resources.requests.cpu}')
+            local cpu_limit=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.containers[0].resources.limits.cpu}')
+            
+            if [ -z "$cpu_request" ] || [ -z "$cpu_limit" ]; then
+                log_error "❌ Pod $pod missing CPU resource specifications"
+                return 1
+            fi
+            
+            # Check memory requests
+            local memory_request=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.containers[0].resources.requests.memory}')
+            local memory_limit=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.containers[0].resources.limits.memory}')
+            
+            if [ -z "$memory_request" ] || [ -z "$memory_limit" ]; then
+                log_error "❌ Pod $pod missing memory resource specifications"
+                return 1
+            fi
+            
+            log_info "✅ Pod $pod has proper resource limits (CPU: $cpu_request/$cpu_limit, Memory: $memory_request/$memory_limit)"
+        done
+        
+        return 0
+    }
+    
+    test_security_context() {
+        local deployment=$1
+        local namespace=$2
+        
+        log_info "Testing security context for $deployment..."
+        
+        local pods=$(kubectl get pods -n $namespace -l app=$deployment -o jsonpath='{.items[*].metadata.name}')
+        
+        for pod in $pods; do
+            log_info "Checking security context for pod $pod..."
+            
+            # Check if running as non-root
+            local run_as_non_root=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.securityContext.runAsNonRoot}')
+            if [ "$run_as_non_root" != "true" ]; then
+                log_error "❌ Pod $pod is not configured to run as non-root"
+                return 1
+            fi
+            
+            # Check if read-only root filesystem
+            local read_only_root=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.containers[0].securityContext.readOnlyRootFilesystem}')
+            if [ "$read_only_root" != "true" ]; then
+                log_warn "⚠️ Pod $pod does not have read-only root filesystem"
+            fi
+            
+            # Check if privilege escalation is disabled
+            local allow_privilege_escalation=$(kubectl get pod $pod -n $namespace -o jsonpath='{.spec.containers[0].securityContext.allowPrivilegeEscalation}')
+            if [ "$allow_privilege_escalation" != "false" ]; then
+                log_error "❌ Pod $pod allows privilege escalation"
+                return 1
+            fi
+            
+            log_info "✅ Pod $pod has proper security context"
+        done
+        
+        return 0
+    }
+    
+    # Main test execution
+    main() {
+        local exit_code=0
+        
+        echo "🧪 Test 1: Application Deployment Readiness"
+        echo "----------------------------------------"
+        
+        # Test API deployment
+        if ! wait_for_deployment "finbot-api" "$NAMESPACE" "$TIMEOUT"; then
+            exit_code=1
+        fi
+        
+        # Test Web deployment
+        if ! wait_for_deployment "finbot-web" "$NAMESPACE" "$TIMEOUT"; then
+            exit_code=1
+        fi
+        
+        # Test Admin deployment
+        if ! wait_for_deployment "finbot-admin" "$NAMESPACE" "$TIMEOUT"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 2: Pod Startup and Health"
+        echo "--------------------------------"
+        
+        # Test pod startup
+        if ! test_pod_startup "finbot-api" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_pod_startup "finbot-web" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_pod_startup "finbot-admin" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 3: Health Endpoints"
+        echo "--------------------------"
+        
+        # Test health endpoints
+        if ! test_health_endpoints "finbot-api" "$NAMESPACE" "3001"; then
+            exit_code=1
+        fi
+        
+        if ! test_health_endpoints "finbot-web" "$NAMESPACE" "80"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 4: Service Discovery"
+        echo "---------------------------"
+        
+        # Test service discovery
+        if ! test_service_discovery "finbot-api" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_service_discovery "finbot-web" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_service_discovery "finbot-admin" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 5: Inter-Service Communication"
+        echo "------------------------------------"
+        
+        # Test inter-service communication
+        if ! test_inter_service_communication; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 6: Autoscaling Configuration"
+        echo "----------------------------------"
+        
+        # Test autoscaling behavior
+        if ! test_autoscaling_behavior "finbot-api" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_autoscaling_behavior "finbot-web" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 7: Resource Limits"
+        echo "-------------------------"
+        
+        # Test resource limits
+        if ! test_resource_limits "finbot-api" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_resource_limits "finbot-web" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "🧪 Test 8: Security Context"
+        echo "--------------------------"
+        
+        # Test security context
+        if ! test_security_context "finbot-api" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        if ! test_security_context "finbot-web" "$NAMESPACE"; then
+            exit_code=1
+        fi
+        
+        echo ""
+        echo "📊 Test Summary"
+        echo "==============="
+        
+        if [ $exit_code -eq 0 ]; then
+            log_info "🎉 All application deployment tests passed!"
+        else
+            log_error "💥 Some application deployment tests failed!"
+        fi
+        
+        return $exit_code
+    }
+    
+    # Execute main function
+    main "$@"
+
+---
+# Test Job for Application Deployment
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: application-deployment-test
+  namespace: finbot-testing
+  labels:
+    app: deployment-tests
+    component: testing
+spec:
+  template:
+    spec:
+      serviceAccountName: deployment-test-runner
+      restartPolicy: Never
+      containers:
+      - name: test-runner
+        image: bitnami/kubectl:latest
+        command: ["/bin/bash"]
+        args: ["/scripts/test-runner.sh"]
+        env:
+        - name: KUBECONFIG
+          value: "/etc/kubeconfig/config"
+        volumeMounts:
+        - name: test-scripts
+          mountPath: /scripts
+        - name: kubeconfig
+          mountPath: /etc/kubeconfig
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: test-scripts
+        configMap:
+          name: application-deployment-tests
+          defaultMode: 0755
+      - name: kubeconfig
+        secret:
+          secretName: deployment-test-kubeconfig
+
+---
+# Service Account for Test Runner
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deployment-test-runner
+  namespace: finbot-testing
+
+---
+# ClusterRole for Test Runner
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: deployment-test-runner
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["autoscaling"]
+  resources: ["horizontalpodautoscalers"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["networkpolicies"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch"]
+
+---
+# ClusterRoleBinding for Test Runner
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: deployment-test-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: deployment-test-runner
+subjects:
+- kind: ServiceAccount
+  name: deployment-test-runner
+  namespace: finbot-testing
+
+---
+# Load Test Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-test-config
+  namespace: finbot-testing
+  labels:
+    app: load-tests
+    component: testing
+data:
+  load-test.js: |
+    import http from 'k6/http';
+    import { check, sleep } from 'k6';
+    import { Rate } from 'k6/metrics';
+    
+    // Custom metrics
+    const errorRate = new Rate('errors');
+    
+    // Test configuration
+    export const options = {
+      stages: [
+        { duration: '2m', target: 10 },   // Ramp up to 10 users
+        { duration: '5m', target: 10 },   // Stay at 10 users
+        { duration: '2m', target: 20 },   // Ramp up to 20 users
+        { duration: '5m', target: 20 },   // Stay at 20 users
+        { duration: '2m', target: 0 },    // Ramp down to 0 users
+      ],
+      thresholds: {
+        http_req_duration: ['p(95)<2000'], // 95% of requests must complete below 2s
+        http_req_failed: ['rate<0.05'],    // Error rate must be below 5%
+        errors: ['rate<0.05'],             // Custom error rate must be below 5%
+      },
+    };
+    
+    const BASE_URL = __ENV.BASE_URL || 'http://finbot-api.production.svc.cluster.local:3001';
+    
+    export default function () {
+      // Test health endpoint
+      let healthResponse = http.get(`${BASE_URL}/health`);
+      let healthCheck = check(healthResponse, {
+        'health endpoint status is 200': (r) => r.status === 200,
+        'health endpoint response time < 500ms': (r) => r.timings.duration < 500,
+      });
+      errorRate.add(!healthCheck);
+      
+      sleep(1);
+      
+      // Test API endpoint
+      let apiResponse = http.get(`${BASE_URL}/api/user/profile`, {
+        headers: {
+          'Authorization': 'Bearer test-token',
+          'Content-Type': 'application/json',
+        },
+      });
+      let apiCheck = check(apiResponse, {
+        'API endpoint status is 200 or 401': (r) => r.status === 200 || r.status === 401,
+        'API endpoint response time < 1000ms': (r) => r.timings.duration < 1000,
+      });
+      errorRate.add(!apiCheck);
+      
+      sleep(2);
+      
+      // Test metrics endpoint
+      let metricsResponse = http.get(`${BASE_URL}/metrics`);
+      let metricsCheck = check(metricsResponse, {
+        'metrics endpoint status is 200': (r) => r.status === 200,
+        'metrics endpoint has prometheus format': (r) => r.body.includes('# HELP'),
+      });
+      errorRate.add(!metricsCheck);
+      
+      sleep(1);
+    }
+
+---
+# Load Test Job
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: application-load-test
+  namespace: finbot-testing
+  labels:
+    app: load-tests
+    component: testing
+spec:
+  template:
+    spec:
+      serviceAccountName: deployment-test-runner
+      restartPolicy: Never
+      containers:
+      - name: k6-load-test
+        image: grafana/k6:latest
+        command: ["k6", "run", "/scripts/load-test.js"]
+        env:
+        - name: BASE_URL
+          value: "http://finbot-api.production.svc.cluster.local:3001"
+        volumeMounts:
+        - name: load-test-scripts
+          mountPath: /scripts
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: load-test-scripts
+        configMap:
+          name: load-test-config
+          defaultMode: 0755
+
+---
+# Chaos Engineering Test
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chaos-test-config
+  namespace: finbot-testing
+  labels:
+    app: chaos-tests
+    component: testing
+data:
+  chaos-test.sh: |
+    #!/bin/bash
+    set -e
+    
+    echo "🔥 Starting Chaos Engineering Tests"
+    echo "=================================="
+    
+    NAMESPACE="production"
+    
+    # Test 1: Pod Failure Resilience
+    echo "Test 1: Pod Failure Resilience"
+    echo "------------------------------"
+    
+    # Get a random API pod
+    API_POD=$(kubectl get pods -n $NAMESPACE -l app=finbot-api -o jsonpath='{.items[0].metadata.name}')
+    echo "Deleting pod: $API_POD"
+    
+    # Delete the pod
+    kubectl delete pod $API_POD -n $NAMESPACE
+    
+    # Wait for replacement pod to be ready
+    echo "Waiting for replacement pod..."
+    kubectl wait --for=condition=ready pod -l app=finbot-api -n $NAMESPACE --timeout=120s
+    
+    # Test if service is still available
+    echo "Testing service availability..."
+    kubectl run test-pod --image=curlimages/curl:latest --rm -i --restart=Never -n $NAMESPACE -- \
+      curl -f http://finbot-api.production.svc.cluster.local:3001/health
+    
+    echo "✅ Pod failure resilience test passed"
+    
+    # Test 2: Network Partition Simulation
+    echo ""
+    echo "Test 2: Network Partition Simulation"
+    echo "-----------------------------------"
+    
+    # Create network policy to block traffic temporarily
+    kubectl apply -f - <<EOF
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: chaos-network-policy
+      namespace: $NAMESPACE
+    spec:
+      podSelector:
+        matchLabels:
+          app: finbot-api
+      policyTypes:
+      - Ingress
+      - Egress
+      ingress: []
+      egress: []
+    EOF
+    
+    echo "Network policy applied, waiting 30 seconds..."
+    sleep 30
+    
+    # Remove network policy
+    kubectl delete networkpolicy chaos-network-policy -n $NAMESPACE
+    
+    echo "Network policy removed, waiting for recovery..."
+    sleep 30
+    
+    # Test if service recovered
+    kubectl run test-pod-2 --image=curlimages/curl:latest --rm -i --restart=Never -n $NAMESPACE -- \
+      curl -f http://finbot-api.production.svc.cluster.local:3001/health
+    
+    echo "✅ Network partition resilience test passed"
+    
+    echo ""
+    echo "🎉 All chaos engineering tests completed successfully!"
+
+---
+# Performance Benchmark Test
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: performance-benchmark-config
+  namespace: finbot-testing
+  labels:
+    app: performance-tests
+    component: testing
+data:
+  benchmark.js: |
+    import http from 'k6/http';
+    import { check } from 'k6';
+    import { Trend } from 'k6/metrics';
+    
+    // Custom metrics
+    const apiResponseTime = new Trend('api_response_time');
+    const dbQueryTime = new Trend('db_query_time');
+    
+    export const options = {
+      scenarios: {
+        constant_load: {
+          executor: 'constant-vus',
+          vus: 50,
+          duration: '10m',
+        },
+        spike_test: {
+          executor: 'ramping-vus',
+          startVUs: 0,
+          stages: [
+            { duration: '1m', target: 100 },
+            { duration: '2m', target: 100 },
+            { duration: '1m', target: 0 },
+          ],
+        },
+      },
+      thresholds: {
+        http_req_duration: ['p(95)<1500', 'p(99)<3000'],
+        http_req_failed: ['rate<0.01'],
+        api_response_time: ['p(95)<1000'],
+        db_query_time: ['p(95)<500'],
+      },
+    };
+    
+    const BASE_URL = __ENV.BASE_URL || 'http://finbot-api.production.svc.cluster.local:3001';
+    
+    export default function () {
+      // API performance test
+      let start = Date.now();
+      let response = http.get(`${BASE_URL}/api/health/database`);
+      let duration = Date.now() - start;
+      
+      apiResponseTime.add(duration);
+      
+      check(response, {
+        'status is 200': (r) => r.status === 200,
+        'response time < 1000ms': (r) => r.timings.duration < 1000,
+      });
+      
+      // Database query performance
+      if (response.status === 200) {
+        let dbTime = response.json('query_time_ms');
+        if (dbTime) {
+          dbQueryTime.add(dbTime);
+        }
+      }
+    }
+    
+    export function handleSummary(data) {
+      return {
+        'performance-report.json': JSON.stringify(data, null, 2),
+        stdout: textSummary(data, { indent: ' ', enableColors: true }),
+      };
+    }

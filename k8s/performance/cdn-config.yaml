@@ -1,0 +1,779 @@
+# FinBot v4 - CDN and Static Asset Optimization Configuration
+# CloudFlare and AWS CloudFront setup for global content delivery
+
+---
+# CloudFlare Configuration (via Terraform/External)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflare-config
+  namespace: production
+  labels:
+    app: cdn
+    component: performance
+data:
+  cloudflare.tf: |
+    # CloudFlare Zone Configuration
+    resource "cloudflare_zone" "finbot" {
+      zone = "finbot.com"
+      plan = "pro"
+    }
+    
+    # DNS Records
+    resource "cloudflare_record" "root" {
+      zone_id = cloudflare_zone.finbot.id
+      name    = "@"
+      value   = var.load_balancer_ip
+      type    = "A"
+      proxied = true
+    }
+    
+    resource "cloudflare_record" "www" {
+      zone_id = cloudflare_zone.finbot.id
+      name    = "www"
+      value   = "finbot.com"
+      type    = "CNAME"
+      proxied = true
+    }
+    
+    resource "cloudflare_record" "api" {
+      zone_id = cloudflare_zone.finbot.id
+      name    = "api"
+      value   = var.api_load_balancer_ip
+      type    = "A"
+      proxied = true
+    }
+    
+    resource "cloudflare_record" "admin" {
+      zone_id = cloudflare_zone.finbot.id
+      name    = "admin"
+      value   = var.admin_load_balancer_ip
+      type    = "A"
+      proxied = true
+    }
+    
+    # Page Rules for Caching
+    resource "cloudflare_page_rule" "static_assets" {
+      zone_id  = cloudflare_zone.finbot.id
+      target   = "finbot.com/static/*"
+      priority = 1
+      
+      actions {
+        cache_level         = "cache_everything"
+        edge_cache_ttl      = 31536000  # 1 year
+        browser_cache_ttl   = 31536000  # 1 year
+        always_online       = "on"
+        rocket_loader       = "on"
+        mirage              = "on"
+      }
+    }
+    
+    resource "cloudflare_page_rule" "api_no_cache" {
+      zone_id  = cloudflare_zone.finbot.id
+      target   = "api.finbot.com/*"
+      priority = 2
+      
+      actions {
+        cache_level = "bypass"
+      }
+    }
+    
+    resource "cloudflare_page_rule" "html_cache" {
+      zone_id  = cloudflare_zone.finbot.id
+      target   = "finbot.com/*"
+      priority = 3
+      
+      actions {
+        cache_level       = "cache_everything"
+        edge_cache_ttl    = 3600    # 1 hour
+        browser_cache_ttl = 3600    # 1 hour
+      }
+    }
+    
+    # Security Settings
+    resource "cloudflare_zone_settings_override" "finbot_settings" {
+      zone_id = cloudflare_zone.finbot.id
+      
+      settings {
+        ssl                      = "strict"
+        always_use_https         = "on"
+        min_tls_version          = "1.2"
+        opportunistic_encryption = "on"
+        tls_1_3                  = "zrt"
+        automatic_https_rewrites = "on"
+        security_level           = "medium"
+        challenge_ttl            = 1800
+        browser_check            = "on"
+        hotlink_protection       = "on"
+        ip_geolocation           = "on"
+        email_obfuscation        = "on"
+        server_side_exclude      = "on"
+        respect_strong_etag      = "on"
+        response_buffering       = "on"
+        sort_query_string_for_cache = "on"
+        true_client_ip_header    = "on"
+        visitor_ip               = "on"
+        zero_rtt                 = "on"
+        brotli                   = "on"
+        pseudo_ipv4              = "off"
+        prefetch_preload         = "off"
+        privacy_pass             = "on"
+        security_header {
+          enabled = true
+        }
+      }
+    }
+    
+    # Rate Limiting
+    resource "cloudflare_rate_limit" "api_rate_limit" {
+      zone_id   = cloudflare_zone.finbot.id
+      threshold = 1000
+      period    = 60
+      
+      match {
+        request {
+          url_pattern = "api.finbot.com/*"
+          schemes     = ["HTTP", "HTTPS"]
+          methods     = ["GET", "POST", "PUT", "DELETE"]
+        }
+      }
+      
+      action {
+        mode    = "challenge"
+        timeout = 86400
+      }
+    }
+    
+    # WAF Rules
+    resource "cloudflare_filter" "sql_injection" {
+      zone_id     = cloudflare_zone.finbot.id
+      description = "Block SQL injection attempts"
+      expression  = "(http.request.uri.query contains \"union select\") or (http.request.uri.query contains \"drop table\")"
+    }
+    
+    resource "cloudflare_firewall_rule" "block_sql_injection" {
+      zone_id     = cloudflare_zone.finbot.id
+      description = "Block SQL injection"
+      filter_id   = cloudflare_filter.sql_injection.id
+      action      = "block"
+    }
+
+---
+# AWS CloudFront Distribution (Alternative/Backup CDN)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudfront-config
+  namespace: production
+  labels:
+    app: cdn
+    component: performance
+data:
+  cloudfront.tf: |
+    # S3 Bucket for Static Assets
+    resource "aws_s3_bucket" "static_assets" {
+      bucket = "finbot-static-assets-${random_id.bucket_suffix.hex}"
+    }
+    
+    resource "aws_s3_bucket_versioning" "static_assets" {
+      bucket = aws_s3_bucket.static_assets.id
+      versioning_configuration {
+        status = "Enabled"
+      }
+    }
+    
+    resource "aws_s3_bucket_server_side_encryption_configuration" "static_assets" {
+      bucket = aws_s3_bucket.static_assets.id
+      
+      rule {
+        apply_server_side_encryption_by_default {
+          sse_algorithm = "AES256"
+        }
+      }
+    }
+    
+    # CloudFront Origin Access Identity
+    resource "aws_cloudfront_origin_access_identity" "static_assets" {
+      comment = "FinBot Static Assets OAI"
+    }
+    
+    # S3 Bucket Policy
+    resource "aws_s3_bucket_policy" "static_assets" {
+      bucket = aws_s3_bucket.static_assets.id
+      
+      policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+          {
+            Sid       = "AllowCloudFrontAccess"
+            Effect    = "Allow"
+            Principal = {
+              AWS = aws_cloudfront_origin_access_identity.static_assets.iam_arn
+            }
+            Action   = "s3:GetObject"
+            Resource = "${aws_s3_bucket.static_assets.arn}/*"
+          }
+        ]
+      })
+    }
+    
+    # CloudFront Distribution
+    resource "aws_cloudfront_distribution" "finbot" {
+      # Static Assets Origin (S3)
+      origin {
+        domain_name = aws_s3_bucket.static_assets.bucket_regional_domain_name
+        origin_id   = "S3-static-assets"
+        
+        s3_origin_config {
+          origin_access_identity = aws_cloudfront_origin_access_identity.static_assets.cloudfront_access_identity_path
+        }
+      }
+      
+      # API Origin (Load Balancer)
+      origin {
+        domain_name = var.api_load_balancer_domain
+        origin_id   = "API-origin"
+        
+        custom_origin_config {
+          http_port              = 80
+          https_port             = 443
+          origin_protocol_policy = "https-only"
+          origin_ssl_protocols   = ["TLSv1.2"]
+        }
+      }
+      
+      # Web App Origin (Load Balancer)
+      origin {
+        domain_name = var.web_load_balancer_domain
+        origin_id   = "Web-origin"
+        
+        custom_origin_config {
+          http_port              = 80
+          https_port             = 443
+          origin_protocol_policy = "https-only"
+          origin_ssl_protocols   = ["TLSv1.2"]
+        }
+      }
+      
+      enabled             = true
+      is_ipv6_enabled     = true
+      default_root_object = "index.html"
+      
+      aliases = ["finbot.com", "www.finbot.com"]
+      
+      # Default Cache Behavior (Web App)
+      default_cache_behavior {
+        allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+        cached_methods         = ["GET", "HEAD"]
+        target_origin_id       = "Web-origin"
+        compress               = true
+        viewer_protocol_policy = "redirect-to-https"
+        
+        forwarded_values {
+          query_string = true
+          headers      = ["Host", "Authorization", "CloudFront-Forwarded-Proto"]
+          
+          cookies {
+            forward = "all"
+          }
+        }
+        
+        min_ttl     = 0
+        default_ttl = 3600
+        max_ttl     = 86400
+      }
+      
+      # Static Assets Cache Behavior
+      ordered_cache_behavior {
+        path_pattern           = "/static/*"
+        allowed_methods        = ["GET", "HEAD"]
+        cached_methods         = ["GET", "HEAD"]
+        target_origin_id       = "S3-static-assets"
+        compress               = true
+        viewer_protocol_policy = "redirect-to-https"
+        
+        forwarded_values {
+          query_string = false
+          
+          cookies {
+            forward = "none"
+          }
+        }
+        
+        min_ttl     = 31536000  # 1 year
+        default_ttl = 31536000  # 1 year
+        max_ttl     = 31536000  # 1 year
+      }
+      
+      # API Cache Behavior (No Caching)
+      ordered_cache_behavior {
+        path_pattern           = "/api/*"
+        allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+        cached_methods         = ["GET", "HEAD"]
+        target_origin_id       = "API-origin"
+        compress               = true
+        viewer_protocol_policy = "redirect-to-https"
+        
+        forwarded_values {
+          query_string = true
+          headers      = ["*"]
+          
+          cookies {
+            forward = "all"
+          }
+        }
+        
+        min_ttl     = 0
+        default_ttl = 0
+        max_ttl     = 0
+      }
+      
+      # Geographic Restrictions
+      restrictions {
+        geo_restriction {
+          restriction_type = "none"
+        }
+      }
+      
+      # SSL Certificate
+      viewer_certificate {
+        acm_certificate_arn      = aws_acm_certificate.finbot.arn
+        ssl_support_method       = "sni-only"
+        minimum_protocol_version = "TLSv1.2_2021"
+      }
+      
+      # Custom Error Pages
+      custom_error_response {
+        error_code         = 404
+        response_code      = 200
+        response_page_path = "/index.html"
+      }
+      
+      custom_error_response {
+        error_code         = 403
+        response_code      = 200
+        response_page_path = "/index.html"
+      }
+      
+      # Logging
+      logging_config {
+        include_cookies = false
+        bucket          = aws_s3_bucket.cloudfront_logs.bucket_domain_name
+        prefix          = "cloudfront-logs/"
+      }
+      
+      tags = {
+        Name        = "FinBot CDN"
+        Environment = "production"
+      }
+    }
+    
+    # ACM Certificate
+    resource "aws_acm_certificate" "finbot" {
+      provider          = aws.us_east_1  # CloudFront requires certificates in us-east-1
+      domain_name       = "finbot.com"
+      subject_alternative_names = ["*.finbot.com"]
+      validation_method = "DNS"
+      
+      lifecycle {
+        create_before_destroy = true
+      }
+    }
+
+---
+# Static Asset Optimization Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asset-optimizer
+  namespace: production
+  labels:
+    app: asset-optimizer
+    component: performance
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: asset-optimizer
+  template:
+    metadata:
+      labels:
+        app: asset-optimizer
+        component: performance
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: asset-optimizer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: asset-optimizer
+        image: finbot/asset-optimizer:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: S3_BUCKET
+          value: "finbot-static-assets"
+        - name: CDN_DOMAIN
+          value: "cdn.finbot.com"
+        - name: OPTIMIZATION_LEVEL
+          value: "aggressive"
+        - name: CACHE_CONTROL_MAX_AGE
+          value: "31536000"  # 1 year
+        - name: AWS_REGION
+          value: "us-east-1"
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: finbot-redis-secret
+              key: REDIS_URL
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /cache
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          requests:
+            cpu: 200m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir:
+          sizeLimit: 10Gi
+
+---
+# Asset Optimizer Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: asset-optimizer
+  namespace: production
+  labels:
+    app: asset-optimizer
+    component: performance
+spec:
+  selector:
+    app: asset-optimizer
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+
+---
+# Asset Optimizer Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: asset-optimizer-config
+  namespace: production
+  labels:
+    app: asset-optimizer
+data:
+  config.yaml: |
+    # Asset optimization configuration
+    optimization:
+      # Image optimization
+      images:
+        formats: ["webp", "avif", "jpeg", "png"]
+        quality:
+          jpeg: 85
+          webp: 80
+          avif: 75
+        resize:
+          enabled: true
+          breakpoints: [320, 640, 768, 1024, 1280, 1920]
+        lazy_loading: true
+        
+      # CSS optimization
+      css:
+        minify: true
+        autoprefixer: true
+        critical_css: true
+        purge_unused: true
+        
+      # JavaScript optimization
+      javascript:
+        minify: true
+        tree_shaking: true
+        code_splitting: true
+        compression: "gzip"
+        
+      # Font optimization
+      fonts:
+        preload: true
+        display: "swap"
+        subset: true
+        formats: ["woff2", "woff"]
+        
+    # Caching configuration
+    caching:
+      # Browser caching
+      browser_cache:
+        static_assets: "1y"
+        html: "1h"
+        api: "no-cache"
+        
+      # CDN caching
+      cdn_cache:
+        static_assets: "1y"
+        html: "1h"
+        api: "no-cache"
+        
+      # Service worker caching
+      service_worker:
+        enabled: true
+        cache_first: ["static/*", "images/*", "fonts/*"]
+        network_first: ["api/*"]
+        stale_while_revalidate: ["*.html", "*.css", "*.js"]
+        
+    # Compression
+    compression:
+      gzip:
+        enabled: true
+        level: 6
+        types: ["text/html", "text/css", "text/javascript", "application/javascript", "application/json"]
+      brotli:
+        enabled: true
+        level: 6
+        types: ["text/html", "text/css", "text/javascript", "application/javascript", "application/json"]
+        
+    # Performance monitoring
+    monitoring:
+      web_vitals: true
+      real_user_monitoring: true
+      synthetic_monitoring: true
+      performance_budget:
+        first_contentful_paint: 1500  # ms
+        largest_contentful_paint: 2500  # ms
+        first_input_delay: 100  # ms
+        cumulative_layout_shift: 0.1
+        total_blocking_time: 300  # ms
+
+---
+# Image Optimization CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: image-optimization
+  namespace: production
+  labels:
+    app: image-optimization
+    component: performance
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: asset-optimizer
+          restartPolicy: OnFailure
+          containers:
+          - name: image-optimizer
+            image: finbot/image-optimizer:v1.0.0
+            env:
+            - name: S3_BUCKET
+              value: "finbot-static-assets"
+            - name: OPTIMIZATION_QUALITY
+              value: "80"
+            - name: FORMATS
+              value: "webp,avif,jpeg"
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting image optimization job..."
+              
+              # Download images from S3
+              aws s3 sync s3://$S3_BUCKET/images/ /tmp/images/
+              
+              # Optimize images
+              find /tmp/images -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) | while read img; do
+                echo "Optimizing: $img"
+                
+                # Generate WebP version
+                cwebp -q $OPTIMIZATION_QUALITY "$img" -o "${img%.*}.webp"
+                
+                # Generate AVIF version (if supported)
+                if command -v avifenc >/dev/null 2>&1; then
+                  avifenc -q $OPTIMIZATION_QUALITY "$img" "${img%.*}.avif"
+                fi
+                
+                # Optimize original
+                if [[ "$img" == *.jpg ]] || [[ "$img" == *.jpeg ]]; then
+                  jpegoptim --max=$OPTIMIZATION_QUALITY --strip-all "$img"
+                elif [[ "$img" == *.png ]]; then
+                  optipng -o7 "$img"
+                fi
+              done
+              
+              # Upload optimized images back to S3
+              aws s3 sync /tmp/images/ s3://$S3_BUCKET/images/ --delete
+              
+              # Invalidate CDN cache
+              aws cloudfront create-invalidation --distribution-id $CLOUDFRONT_DISTRIBUTION_ID --paths "/images/*"
+              
+              echo "Image optimization completed"
+            resources:
+              requests:
+                cpu: 500m
+                memory: 1Gi
+              limits:
+                cpu: 2000m
+                memory: 4Gi
+            securityContext:
+              allowPrivilegeEscalation: false
+              capabilities:
+                drop:
+                - ALL
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 65534
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir:
+              sizeLimit: 20Gi
+
+---
+# Performance Monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cdn-performance
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: performance
+spec:
+  selector:
+    matchLabels:
+      component: performance
+  namespaceSelector:
+    matchNames:
+    - production
+  endpoints:
+  - port: http
+    interval: 30s
+    path: /metrics
+
+---
+# Performance Alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: performance-rules
+  namespace: monitoring
+  labels:
+    team: finbot
+    app: performance
+spec:
+  groups:
+  - name: performance.rules
+    interval: 30s
+    rules:
+    - alert: HighCDNErrorRate
+      expr: |
+        (
+          rate(cloudfront_requests_total{status_code=~"4..|5.."}[5m]) /
+          rate(cloudfront_requests_total[5m])
+        ) > 0.05
+      for: 5m
+      labels:
+        severity: warning
+        component: cdn
+      annotations:
+        summary: "High CDN error rate"
+        description: "CDN error rate is {{ $value | humanizePercentage }}."
+    
+    - alert: SlowPageLoadTime
+      expr: |
+        histogram_quantile(0.95, rate(page_load_time_seconds_bucket[5m])) > 3
+      for: 5m
+      labels:
+        severity: warning
+        component: performance
+      annotations:
+        summary: "Slow page load time"
+        description: "95th percentile page load time is {{ $value }}s."
+    
+    - alert: PoorWebVitals
+      expr: |
+        largest_contentful_paint_seconds > 2.5 or
+        first_input_delay_seconds > 0.1 or
+        cumulative_layout_shift > 0.1
+      for: 5m
+      labels:
+        severity: warning
+        component: web-vitals
+      annotations:
+        summary: "Poor Web Vitals score"
+        description: "Web Vitals metrics are below acceptable thresholds."
+
+---
+# Service Account for Asset Optimizer
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: asset-optimizer
+  namespace: production
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/finbot-asset-optimizer-role
+
+---
+# RBAC for Asset Optimizer
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: production
+  name: asset-optimizer
+rules:
+- apiGroups: [""]
+  resources: ["configmaps", "secrets"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: asset-optimizer
+  namespace: production
+subjects:
+- kind: ServiceAccount
+  name: asset-optimizer
+  namespace: production
+roleRef:
+  kind: Role
+  name: asset-optimizer
+  apiGroup: rbac.authorization.k8s.io
