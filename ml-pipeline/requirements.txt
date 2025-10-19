@@ -9,6 +9,15 @@ redis==6.4.0
 numpy==2.3.4
 pandas==2.3.3
 scikit-learn==1.7.2
+torch>=2.0.0
+torchvision>=0.15.0
+tensorflow>=2.13.0
+onnx>=1.14.0
+onnxruntime>=1.15.0
+
+# Performance optimization
+psutil>=5.9.0
+GPUtil>=1.4.0
 
 # Async and performance
 asyncio-throttle==1.0.2
