@@ -31,6 +31,34 @@ services:
     restart: unless-stopped
     command: redis-server --appendonly yes
 
+  # Backend API Service
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: finbot-backend-dev
+    ports:
+      - "8001:8001"
+    environment:
+      - NODE_ENV=development
+      - PORT=8001
+      - DATABASE_URL=postgresql://finbot_user:finbot_dev_pass@postgres:5432/finbot_dev
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=finbot-super-secret-jwt-key-development-only
+      - JWT_REFRESH_SECRET=finbot-super-secret-refresh-key-development-only
+      - ML_SERVICE_URL=http://ml-service:8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - finbot-dev-network
+
   # ML Service
   ml-service:
     build:
@@ -43,15 +71,41 @@ services:
       - PYTHONPATH=/app
       - DATABASE_URL=postgresql://finbot_user:finbot_dev_pass@postgres:5432/finbot_dev
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     volumes:
       - ./ml-pipeline:/app
+    networks:
+      - finbot-dev-network
+
+  # Frontend Service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend.dev
+    container_name: finbot-frontend-dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://localhost:8001
+      - NEXT_PUBLIC_ML_API_URL=http://localhost:8080
+    depends_on:
+      - backend
+      - ml-service
+    restart: unless-stopped
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - finbot-dev-network
 
 volumes:
   postgres_dev_data:
   redis_dev_data:
 
 networks:
-  default:
-    name: finbot-dev-network
+  finbot-dev-network:
+    driver: bridge

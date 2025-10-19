@@ -1,0 +1,116 @@
+# FinBot v4 Docker Management Makefile
+
+.PHONY: help dev prod build clean logs health test
+
+# Default target
+help:
+	@echo "FinBot v4 Docker Commands:"
+	@echo "  make dev          - Start development environment"
+	@echo "  make prod         - Start production environment"
+	@echo "  make build        - Build all Docker images"
+	@echo "  make clean        - Clean up containers and images"
+	@echo "  make logs         - Show logs from all services"
+	@echo "  make health       - Check health of all services"
+	@echo "  make test         - Run health checks and tests"
+	@echo "  make stop         - Stop all services"
+	@echo "  make restart      - Restart all services"
+
+# Development environment
+dev:
+	@echo "🚀 Starting FinBot v4 Development Environment..."
+	docker-compose -f docker-compose.dev.yml up --build -d
+	@echo "✅ Development environment started!"
+	@echo "🔗 Services:"
+	@echo "   Frontend:  http://localhost:3000"
+	@echo "   Backend:   http://localhost:8001"
+	@echo "   ML API:    http://localhost:8080"
+	@echo "   Database:  localhost:5432"
+	@echo "   Redis:     localhost:6379"
+
+# Production environment
+prod:
+	@echo "🚀 Starting FinBot v4 Production Environment..."
+	docker-compose -f docker-compose.production.yml up --build -d
+	@echo "✅ Production environment started!"
+
+# Build all images
+build:
+	@echo "🔨 Building all Docker images..."
+	docker-compose -f docker-compose.dev.yml build
+	docker-compose -f docker-compose.production.yml build
+	@echo "✅ All images built successfully!"
+
+# Clean up
+clean:
+	@echo "🧹 Cleaning up Docker containers and images..."
+	docker-compose -f docker-compose.dev.yml down -v --rmi all
+	docker-compose -f docker-compose.production.yml down -v --rmi all
+	docker system prune -f
+	@echo "✅ Cleanup completed!"
+
+# Show logs
+logs:
+	@echo "📋 Showing logs from all services..."
+	docker-compose -f docker-compose.dev.yml logs -f
+
+# Health check
+health:
+	@echo "🏥 Checking service health..."
+	@echo "Backend Health:"
+	@curl -s http://localhost:8001/health | jq . || echo "❌ Backend not responding"
+	@echo "\nML Service Health:"
+	@curl -s http://localhost:8080/health | jq . || echo "❌ ML Service not responding"
+	@echo "\nFrontend Health:"
+	@curl -s http://localhost:3000 > /dev/null && echo "✅ Frontend responding" || echo "❌ Frontend not responding"
+	@echo "\nDocker Services:"
+	@docker-compose -f docker-compose.dev.yml ps
+
+# Test all services
+test: health
+	@echo "🧪 Running integration tests..."
+	@echo "Testing Dashboard API:"
+	@curl -s http://localhost:3000/api/dashboard | jq . || echo "❌ Dashboard API failed"
+	@echo "\nTesting Insights API:"
+	@curl -s http://localhost:3000/api/insights | jq . || echo "❌ Insights API failed"
+
+# Stop services
+stop:
+	@echo "🛑 Stopping all services..."
+	docker-compose -f docker-compose.dev.yml down
+	docker-compose -f docker-compose.production.yml down
+	@echo "✅ All services stopped!"
+
+# Restart services
+restart: stop dev
+
+# Database operations
+db-migrate:
+	@echo "🗄️ Running database migrations..."
+	docker-compose -f docker-compose.dev.yml exec backend npx prisma migrate dev
+
+db-seed:
+	@echo "🌱 Seeding database..."
+	docker-compose -f docker-compose.dev.yml exec backend npx prisma db seed
+
+db-reset:
+	@echo "🔄 Resetting database..."
+	docker-compose -f docker-compose.dev.yml exec backend npx prisma migrate reset --force
+
+# Individual service management
+backend-logs:
+	docker-compose -f docker-compose.dev.yml logs -f backend
+
+frontend-logs:
+	docker-compose -f docker-compose.dev.yml logs -f frontend
+
+ml-logs:
+	docker-compose -f docker-compose.dev.yml logs -f ml-service
+
+# Development helpers
+dev-shell:
+	docker-compose -f docker-compose.dev.yml exec backend sh
+
+dev-install:
+	@echo "📦 Installing dependencies in containers..."
+	docker-compose -f docker-compose.dev.yml exec backend npm install
+	docker-compose -f docker-compose.dev.yml exec frontend npm install
