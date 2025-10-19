@@ -10,121 +10,119 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// User Management
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id            String    @id @default(cuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  profile       Json      @default("{}")
+  preferences   Json      @default("{}")
+  securitySettings Json   @default("{}") @map("security_settings")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  lastLoginAt   DateTime? @map("last_login_at")
 
   // Relations
-  accounts     Account[]
-  transactions Transaction[]
-  budgets      Budget[]
-  goals        Goal[]
-  insights     Insight[]
+  accounts      Account[]
+  transactions  Transaction[]
+  budgets       Budget[]
+  goals         Goal[]
+  notifications Notification[]
+  sessions      UserSession[]
+  auditLogs     AuditLog[]
 
   @@map("users")
 }
 
-model Account {
-  id          String      @id @default(cuid())
-  userId      String
-  name        String
-  type        AccountType
-  balance     Decimal     @default(0)
-  currency    String      @default("USD")
-  isActive    Boolean     @default(true)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+// User Sessions for JWT management
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  refreshToken String   @unique @map("refresh_token")
+  deviceInfo   Json     @default("{}") @map("device_info")
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
 
-  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_sessions")
+}
+
+// Financial Accounts
+model Account {
+  id           String      @id @default(cuid())
+  userId       String      @map("user_id")
+  name         String
+  type         AccountType
+  balance      Decimal     @default(0) @db.Decimal(15, 2)
+  currency     String      @default("USD")
+  isActive     Boolean     @default(true) @map("is_active")
+  metadata     Json        @default("{}")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions Transaction[]
 
   @@map("accounts")
 }
 
-model Transaction {
-  id          String            @id @default(cuid())
-  userId      String
-  accountId   String
-  amount      Decimal
-  description String?
-  category    TransactionCategory
-  type        TransactionType
-  date        DateTime
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
-
-  // Relations
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
-
-  @@map("transactions")
-}
-
-model Budget {
-  id        String   @id @default(cuid())
-  userId    String
-  name      String
-  category  TransactionCategory
-  amount    Decimal
-  period    BudgetPeriod
-  startDate DateTime
-  endDate   DateTime
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("budgets")
-}
-
-model Goal {
-  id          String     @id @default(cuid())
-  userId      String
-  name        String
-  description String?
-  targetAmount Decimal
-  currentAmount Decimal   @default(0)
-  targetDate  DateTime?
-  status      GoalStatus @default(ACTIVE)
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-
-  // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("goals")
-}
-
-model Insight {
-  id          String      @id @default(cuid())
-  userId      String
-  title       String
-  description String
-  type        InsightType
-  priority    Priority
-  confidence  Float
-  isRead      Boolean     @default(false)
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-
-  // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@map("insights")
-}
-
-// Enums
 enum AccountType {
   CHECKING
   SAVINGS
   CREDIT_CARD
   INVESTMENT
   LOAN
+  OTHER
+}
+
+// Transaction Categories
+model Category {
+  id           String  @id @default(cuid())
+  name         String  @unique
+  icon         String?
+  color        String?
+  parentId     String? @map("parent_id")
+  isCustom     Boolean @default(false) @map("is_custom")
+  isActive     Boolean @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  parent       Category?     @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children     Category[]    @relation("CategoryHierarchy")
+  transactions Transaction[]
+
+  @@map("categories")
+}
+
+// Transactions
+model Transaction {
+  id              String            @id @default(cuid())
+  userId          String            @map("user_id")
+  accountId       String?           @map("account_id")
+  categoryId      String?           @map("category_id")
+  amount          Decimal           @db.Decimal(15, 2)
+  currency        String            @default("USD")
+  description     String
+  merchantName    String?           @map("merchant_name")
+  locationData    Json?             @map("location_data")
+  transactionDate DateTime          @map("transaction_date")
+  type            TransactionType
+  status          TransactionStatus @default(COMPLETED)
+  metadata        Json              @default("{}")
+  mlConfidence    Float?            @map("ml_confidence")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account  Account?  @relation(fields: [accountId], references: [id])
+  category Category? @relation(fields: [categoryId], references: [id])
+
+  @@index([userId, transactionDate])
+  @@index([categoryId])
+  @@index([transactionDate])
+  @@map("transactions")
 }
 
 enum TransactionType {
@@ -133,20 +131,33 @@ enum TransactionType {
   TRANSFER
 }
 
-enum TransactionCategory {
-  FOOD_DINING
-  SHOPPING
-  ENTERTAINMENT
-  BILLS_UTILITIES
-  TRANSPORTATION
-  HEALTHCARE
-  EDUCATION
-  TRAVEL
-  INVESTMENT
-  SALARY
-  FREELANCE
-  BUSINESS
-  OTHER
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+// Budget Management
+model Budget {
+  id          String       @id @default(cuid())
+  userId      String       @map("user_id")
+  name        String
+  description String?
+  periodType  BudgetPeriod @map("period_type")
+  startDate   DateTime     @map("start_date")
+  endDate     DateTime     @map("end_date")
+  categories  Json         @default("[]") // Array of budget categories with allocations
+  totalAmount Decimal      @db.Decimal(15, 2) @map("total_amount")
+  status      BudgetStatus @default(ACTIVE)
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([startDate, endDate])
+  @@map("budgets")
 }
 
 enum BudgetPeriod {
@@ -154,6 +165,55 @@ enum BudgetPeriod {
   MONTHLY
   QUARTERLY
   YEARLY
+  CUSTOM
+}
+
+enum BudgetStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+  ARCHIVED
+}
+
+// Goal Tracking
+model Goal {
+  id            String     @id @default(cuid())
+  userId        String     @map("user_id")
+  title         String
+  description   String?
+  type          GoalType
+  targetAmount  Decimal    @db.Decimal(15, 2) @map("target_amount")
+  currentAmount Decimal    @default(0) @db.Decimal(15, 2) @map("current_amount")
+  targetDate    DateTime   @map("target_date")
+  priority      Priority   @default(MEDIUM)
+  status        GoalStatus @default(ACTIVE)
+  milestones    Json       @default("[]") // Array of milestone objects
+  strategy      Json       @default("{}") // Goal strategy configuration
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([targetDate])
+  @@map("goals")
+}
+
+enum GoalType {
+  SAVINGS
+  DEBT_PAYOFF
+  INVESTMENT
+  EMERGENCY_FUND
+  VACATION
+  PURCHASE
+  OTHER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
 }
 
 enum GoalStatus {
@@ -163,18 +223,78 @@ enum GoalStatus {
   CANCELLED
 }
 
-enum InsightType {
-  SPENDING_PATTERN
-  BUDGET_ALERT
-  SAVING_OPPORTUNITY
-  ANOMALY_DETECTION
-  GOAL_PROGRESS
-  RISK_ASSESSMENT
+// Notification System
+model Notification {
+  id          String             @id @default(cuid())
+  userId      String             @map("user_id")
+  title       String
+  message     String
+  type        NotificationType
+  priority    Priority           @default(MEDIUM)
+  channels    Json               @default("[]") // Array of delivery channels
+  status      NotificationStatus @default(PENDING)
+  scheduledAt DateTime?          @map("scheduled_at")
+  sentAt      DateTime?          @map("sent_at")
+  readAt      DateTime?          @map("read_at")
+  metadata    Json               @default("{}")
+  createdAt   DateTime           @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@index([scheduledAt])
+  @@map("notifications")
 }
 
-enum Priority {
-  LOW
-  MEDIUM
-  HIGH
-  CRITICAL
+enum NotificationType {
+  BUDGET_ALERT
+  GOAL_MILESTONE
+  TRANSACTION_ANOMALY
+  SECURITY_ALERT
+  SYSTEM_UPDATE
+  MARKETING
+  OTHER
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+// Audit Logging
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  action    String
+  resource  String
+  resourceId String? @map("resource_id")
+  oldValues Json?    @map("old_values")
+  newValues Json?    @map("new_values")
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// System Configuration
+model SystemConfig {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  category  String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("system_config")
 }
