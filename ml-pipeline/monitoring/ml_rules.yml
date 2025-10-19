@@ -1,0 +1,267 @@
+# ML-Specific Prometheus Alert Rules
+# These rules monitor ML model performance, data quality, and system health
+
+groups:
+  - name: ml_model_performance
+    rules:
+      # Model Latency Alerts
+      - alert: HighModelLatency
+        expr: histogram_quantile(0.95, rate(ml_model_inference_duration_seconds_bucket[5m])) > 1.0
+        for: 2m
+        labels:
+          severity: warning
+          component: ml_model
+        annotations:
+          summary: "High ML model inference latency detected"
+          description: "Model {{ $labels.model_name }} has 95th percentile latency of {{ $value }}s, which is above the 1s threshold"
+
+      - alert: CriticalModelLatency
+        expr: histogram_quantile(0.95, rate(ml_model_inference_duration_seconds_bucket[5m])) > 5.0
+        for: 1m
+        labels:
+          severity: critical
+          component: ml_model
+        annotations:
+          summary: "Critical ML model inference latency detected"
+          description: "Model {{ $labels.model_name }} has 95th percentile latency of {{ $value }}s, which is critically high"
+
+      # Model Error Rate Alerts
+      - alert: HighModelErrorRate
+        expr: rate(ml_model_errors_total[5m]) / rate(ml_model_requests_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          component: ml_model
+        annotations:
+          summary: "High ML model error rate detected"
+          description: "Model {{ $labels.model_name }} has error rate of {{ $value | humanizePercentage }}, which is above 5%"
+
+      - alert: CriticalModelErrorRate
+        expr: rate(ml_model_errors_total[5m]) / rate(ml_model_requests_total[5m]) > 0.20
+        for: 1m
+        labels:
+          severity: critical
+          component: ml_model
+        annotations:
+          summary: "Critical ML model error rate detected"
+          description: "Model {{ $labels.model_name }} has error rate of {{ $value | humanizePercentage }}, which is critically high"
+
+      # Model Throughput Alerts
+      - alert: LowModelThroughput
+        expr: rate(ml_model_requests_total[5m]) < 10
+        for: 5m
+        labels:
+          severity: warning
+          component: ml_model
+        annotations:
+          summary: "Low ML model throughput detected"
+          description: "Model {{ $labels.model_name }} has throughput of {{ $value }} requests/sec, which is below expected threshold"
+
+      # Model Accuracy Drift
+      - alert: ModelAccuracyDrift
+        expr: ml_model_accuracy < 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: ml_model
+        annotations:
+          summary: "ML model accuracy drift detected"
+          description: "Model {{ $labels.model_name }} accuracy has dropped to {{ $value | humanizePercentage }}, indicating potential model drift"
+
+      - alert: CriticalModelAccuracyDrift
+        expr: ml_model_accuracy < 0.6
+        for: 5m
+        labels:
+          severity: critical
+          component: ml_model
+        annotations:
+          summary: "Critical ML model accuracy drift detected"
+          description: "Model {{ $labels.model_name }} accuracy has critically dropped to {{ $value | humanizePercentage }}"
+
+  - name: ml_data_quality
+    rules:
+      # Data Quality Alerts
+      - alert: HighDataQualityIssues
+        expr: rate(ml_data_quality_issues_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: data_pipeline
+        annotations:
+          summary: "High data quality issues detected"
+          description: "Data quality issues rate is {{ $value }} per second, indicating potential data pipeline problems"
+
+      - alert: MissingFeatures
+        expr: ml_feature_missing_rate > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: feature_store
+        annotations:
+          summary: "High missing feature rate detected"
+          description: "Feature {{ $labels.feature_name }} has missing rate of {{ $value | humanizePercentage }}"
+
+      # Data Freshness Alerts
+      - alert: StaleData
+        expr: time() - ml_data_last_updated_timestamp > 3600
+        for: 0m
+        labels:
+          severity: warning
+          component: data_pipeline
+        annotations:
+          summary: "Stale data detected"
+          description: "Data source {{ $labels.data_source }} hasn't been updated for {{ $value | humanizeDuration }}"
+
+      - alert: CriticalStaleData
+        expr: time() - ml_data_last_updated_timestamp > 7200
+        for: 0m
+        labels:
+          severity: critical
+          component: data_pipeline
+        annotations:
+          summary: "Critical stale data detected"
+          description: "Data source {{ $labels.data_source }} hasn't been updated for {{ $value | humanizeDuration }}"
+
+  - name: ml_system_resources
+    rules:
+      # GPU Utilization Alerts
+      - alert: HighGPUUtilization
+        expr: gpu_utilization_percent > 90
+        for: 10m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "High GPU utilization detected"
+          description: "GPU {{ $labels.gpu_id }} utilization is {{ $value }}%, which may impact performance"
+
+      - alert: GPUMemoryHigh
+        expr: gpu_memory_used_percent > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "High GPU memory usage detected"
+          description: "GPU {{ $labels.gpu_id }} memory usage is {{ $value }}%, approaching limit"
+
+      - alert: GPUMemoryCritical
+        expr: gpu_memory_used_percent > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: gpu
+        annotations:
+          summary: "Critical GPU memory usage detected"
+          description: "GPU {{ $labels.gpu_id }} memory usage is {{ $value }}%, may cause OOM errors"
+
+      # Cache Performance Alerts
+      - alert: LowCacheHitRate
+        expr: ml_cache_hit_rate < 0.7
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Low cache hit rate detected"
+          description: "Cache hit rate is {{ $value | humanizePercentage }}, which may impact performance"
+
+      - alert: CacheConnectionIssues
+        expr: ml_cache_connection_errors_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Cache connection issues detected"
+          description: "Cache connection errors detected: {{ $value }} errors in the last minute"
+
+  - name: ml_business_metrics
+    rules:
+      # Anomaly Detection Alerts
+      - alert: HighAnomalyRate
+        expr: ml_anomaly_detection_rate > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          component: anomaly_detection
+        annotations:
+          summary: "High anomaly detection rate"
+          description: "Anomaly detection rate is {{ $value | humanizePercentage }}, which may indicate system issues or unusual user behavior"
+
+      # Prediction Confidence Alerts
+      - alert: LowPredictionConfidence
+        expr: avg(ml_prediction_confidence) < 0.7
+        for: 10m
+        labels:
+          severity: warning
+          component: ml_model
+        annotations:
+          summary: "Low prediction confidence detected"
+          description: "Average prediction confidence is {{ $value | humanizePercentage }}, indicating potential model issues"
+
+      # User Engagement Alerts
+      - alert: LowInsightEngagement
+        expr: ml_insight_engagement_rate < 0.3
+        for: 30m
+        labels:
+          severity: warning
+          component: insights
+        annotations:
+          summary: "Low insight engagement rate"
+          description: "Insight engagement rate is {{ $value | humanizePercentage }}, users may not find insights valuable"
+
+  - name: ml_infrastructure
+    rules:
+      # Service Health Alerts
+      - alert: MLServiceDown
+        expr: up{job=~"ml-.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ml_service
+        annotations:
+          summary: "ML service is down"
+          description: "ML service {{ $labels.job }} on {{ $labels.instance }} is down"
+
+      - alert: HighMLServiceMemory
+        expr: process_resident_memory_bytes{job=~"ml-.*"} / 1024 / 1024 / 1024 > 8
+        for: 5m
+        labels:
+          severity: warning
+          component: ml_service
+        annotations:
+          summary: "High memory usage in ML service"
+          description: "ML service {{ $labels.job }} is using {{ $value }}GB of memory"
+
+      # Model Loading Alerts
+      - alert: ModelLoadingFailure
+        expr: increase(ml_model_loading_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: model_serving
+        annotations:
+          summary: "Model loading failure detected"
+          description: "Model {{ $labels.model_name }} failed to load {{ $value }} times in the last 5 minutes"
+
+      # Training Pipeline Alerts
+      - alert: TrainingPipelineFailure
+        expr: ml_training_pipeline_status != 1
+        for: 0m
+        labels:
+          severity: critical
+          component: training_pipeline
+        annotations:
+          summary: "Training pipeline failure detected"
+          description: "Training pipeline {{ $labels.pipeline_name }} has failed"
+
+      - alert: LongRunningTraining
+        expr: ml_training_duration_seconds > 7200
+        for: 0m
+        labels:
+          severity: warning
+          component: training_pipeline
+        annotations:
+          summary: "Long running training job detected"
+          description: "Training job {{ $labels.job_name }} has been running for {{ $value | humanizeDuration }}"

@@ -1,0 +1,249 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: ml-training-pipeline
+  namespace: finbot-ml
+  labels:
+    component: kubeflow-pipeline
+spec:
+  entrypoint: ml-training-workflow
+  serviceAccountName: ml-pipeline-service-account
+  volumeClaimTemplates:
+  - metadata:
+      name: workspace
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 50Gi
+  templates:
+  - name: ml-training-workflow
+    dag:
+      tasks:
+      - name: data-preparation
+        template: data-prep
+      - name: feature-engineering
+        template: feature-eng
+        dependencies: [data-preparation]
+      - name: model-training
+        template: train-models
+        dependencies: [feature-engineering]
+      - name: model-validation
+        template: validate-models
+        dependencies: [model-training]
+      - name: model-deployment
+        template: deploy-models
+        dependencies: [model-validation]
+
+  - name: data-prep
+    container:
+      image: finbot/data-preparation:latest
+      command: [python]
+      args: ["/app/data_preparation.py"]
+      env:
+      - name: DATABASE_URL
+        valueFrom:
+          secretKeyRef:
+            name: ml-pipeline-secrets
+            key: database-url
+      - name: OUTPUT_PATH
+        value: "/workspace/prepared_data"
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: feature-eng
+    container:
+      image: finbot/feature-engineering:latest
+      command: [python]
+      args: ["/app/feature_engineering.py"]
+      env:
+      - name: INPUT_PATH
+        value: "/workspace/prepared_data"
+      - name: OUTPUT_PATH
+        value: "/workspace/features"
+      - name: FEATURE_STORE_URL
+        value: "http://feature-store-service:8080"
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: train-models
+    container:
+      image: finbot/model-training:latest
+      command: [python]
+      args: ["/app/train_models.py"]
+      env:
+      - name: INPUT_PATH
+        value: "/workspace/features"
+      - name: OUTPUT_PATH
+        value: "/workspace/models"
+      - name: MODEL_REGISTRY_URL
+        value: "http://model-registry-service:8080"
+      - name: EXPERIMENT_TRACKING_URL
+        value: "http://mlflow-service:5000"
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+          nvidia.com/gpu: 1
+        limits:
+          cpu: "8"
+          memory: "16Gi"
+          nvidia.com/gpu: 1
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: validate-models
+    container:
+      image: finbot/model-validation:latest
+      command: [python]
+      args: ["/app/validate_models.py"]
+      env:
+      - name: MODEL_PATH
+        value: "/workspace/models"
+      - name: VALIDATION_DATA_PATH
+        value: "/workspace/validation_data"
+      - name: METRICS_OUTPUT_PATH
+        value: "/workspace/validation_metrics"
+      - name: MIN_ACCURACY_THRESHOLD
+        value: "0.85"
+      - name: MIN_PRECISION_THRESHOLD
+        value: "0.80"
+      - name: MIN_RECALL_THRESHOLD
+        value: "0.80"
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+
+  - name: deploy-models
+    container:
+      image: finbot/model-deployment:latest
+      command: [python]
+      args: ["/app/deploy_models.py"]
+      env:
+      - name: MODEL_PATH
+        value: "/workspace/models"
+      - name: VALIDATION_METRICS_PATH
+        value: "/workspace/validation_metrics"
+      - name: MODEL_SERVING_URL
+        value: "http://model-serving-service:8080"
+      - name: DEPLOYMENT_STRATEGY
+        value: "blue-green"
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+      volumeMounts:
+      - name: workspace
+        mountPath: /workspace
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ml-pipeline-config
+  namespace: finbot-ml
+data:
+  pipeline_config.yaml: |
+    pipeline:
+      name: "FinBot ML Training Pipeline"
+      version: "1.0"
+      schedule: "0 2 * * *"  # Daily at 2 AM
+      
+    data_preparation:
+      batch_size: 10000
+      validation_split: 0.2
+      test_split: 0.1
+      
+    feature_engineering:
+      feature_selection_method: "mutual_info"
+      max_features: 100
+      scaling_method: "standard"
+      
+    model_training:
+      models:
+        - name: "anomaly_detection"
+          algorithm: "isolation_forest"
+          hyperparameters:
+            n_estimators: 100
+            contamination: 0.1
+        - name: "risk_assessment"
+          algorithm: "gradient_boosting"
+          hyperparameters:
+            n_estimators: 200
+            learning_rate: 0.1
+            max_depth: 6
+        - name: "budget_optimization"
+          algorithm: "neural_network"
+          hyperparameters:
+            hidden_layers: [128, 64, 32]
+            dropout_rate: 0.2
+            learning_rate: 0.001
+            
+    validation:
+      cross_validation_folds: 5
+      metrics:
+        - accuracy
+        - precision
+        - recall
+        - f1_score
+        - auc_roc
+        
+    deployment:
+      staging_validation_period: "24h"
+      rollback_threshold: 0.05
+      monitoring_metrics:
+        - prediction_latency
+        - prediction_accuracy
+        - error_rate
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ml-training-cronjob
+  namespace: finbot-ml
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ml-pipeline-service-account
+          containers:
+          - name: pipeline-trigger
+            image: finbot/pipeline-trigger:latest
+            command: ["/bin/sh"]
+            args:
+            - -c
+            - |
+              kubectl create -f /config/ml-training-pipeline.yaml
+          restartPolicy: OnFailure
+          volumes:
+          - name: pipeline-config
+            configMap:
+              name: ml-pipeline-config

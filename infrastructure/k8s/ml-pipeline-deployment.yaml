@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-pipeline-server
+  namespace: finbot-ml
+  labels:
+    app: ml-pipeline-server
+    component: ml-infrastructure
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ml-pipeline-server
+  template:
+    metadata:
+      labels:
+        app: ml-pipeline-server
+    spec:
+      serviceAccountName: ml-pipeline-service-account
+      containers:
+      - name: ml-pipeline-server
+        image: finbot/ml-pipeline:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8443
+          name: https
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-pipeline-secrets
+              key: redis-url
+        - name: MODEL_REGISTRY_URL
+          value: "http://model-registry-service:8080"
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+        - name: config-volume
+          mountPath: /config
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: ml-model-storage
+      - name: config-volume
+        configMap:
+          name: ml-pipeline-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-pipeline-service
+  namespace: finbot-ml
+  labels:
+    app: ml-pipeline-server
+spec:
+  selector:
+    app: ml-pipeline-server
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: https
+    port: 8443
+    targetPort: 8443
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ml-pipeline-service-account
+  namespace: finbot-ml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ml-pipeline-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ml-pipeline-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ml-pipeline-role
+subjects:
+- kind: ServiceAccount
+  name: ml-pipeline-service-account
+  namespace: finbot-ml

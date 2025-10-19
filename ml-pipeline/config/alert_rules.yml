@@ -1,0 +1,251 @@
+# Prometheus Alert Rules for ML System Monitoring
+
+groups:
+  - name: ml_system_alerts
+    rules:
+      # System Resource Alerts
+      - alert: HighCPUUsage
+        expr: system_cpu_usage_percent > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value }}% for more than 5 minutes"
+
+      - alert: CriticalCPUUsage
+        expr: system_cpu_usage_percent > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical CPU usage detected"
+          description: "CPU usage is {{ $value }}% for more than 2 minutes"
+
+      - alert: HighMemoryUsage
+        expr: system_memory_usage_percent > 85
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is {{ $value }}% for more than 5 minutes"
+
+      - alert: CriticalMemoryUsage
+        expr: system_memory_usage_percent > 95
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical memory usage detected"
+          description: "Memory usage is {{ $value }}% for more than 2 minutes"
+
+      # GPU Alerts
+      - alert: HighGPUMemoryUsage
+        expr: gpu_memory_usage_percent > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "High GPU memory usage on {{ $labels.gpu_name }}"
+          description: "GPU {{ $labels.gpu_id }} memory usage is {{ $value }}%"
+
+      - alert: GPUOverheating
+        expr: gpu_temperature > 85
+        for: 3m
+        labels:
+          severity: critical
+          component: gpu
+        annotations:
+          summary: "GPU overheating detected"
+          description: "GPU {{ $labels.gpu_id }} temperature is {{ $value }}°C"
+
+  - name: ml_model_alerts
+    rules:
+      # Model Performance Alerts
+      - alert: ModelAccuracyDegradation
+        expr: ml_model_accuracy < 0.8
+        for: 10m
+        labels:
+          severity: warning
+          component: model
+        annotations:
+          summary: "Model accuracy degradation detected"
+          description: "Model {{ $labels.model_name }} accuracy dropped to {{ $value }}"
+
+      - alert: CriticalModelAccuracyDegradation
+        expr: ml_model_accuracy < 0.7
+        for: 5m
+        labels:
+          severity: critical
+          component: model
+        annotations:
+          summary: "Critical model accuracy degradation"
+          description: "Model {{ $labels.model_name }} accuracy critically low at {{ $value }}"
+
+      - alert: HighInferenceLatency
+        expr: histogram_quantile(0.95, rate(ml_model_inference_duration_seconds_bucket[5m])) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+          component: model
+        annotations:
+          summary: "High model inference latency"
+          description: "95th percentile inference latency is {{ $value }}s for model {{ $labels.model_name }}"
+
+      - alert: ModelInferenceErrors
+        expr: rate(ml_model_inference_errors_total[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          component: model
+        annotations:
+          summary: "High model inference error rate"
+          description: "Model {{ $labels.model_name }} error rate is {{ $value }} errors/sec"
+
+      - alert: ModelDriftDetected
+        expr: ml_model_drift_score > 0.3
+        for: 15m
+        labels:
+          severity: warning
+          component: model
+        annotations:
+          summary: "Model drift detected"
+          description: "Model {{ $labels.model_name }} drift score is {{ $value }}"
+
+  - name: cache_alerts
+    rules:
+      # Cache Performance Alerts
+      - alert: LowCacheHitRate
+        expr: (rate(ml_cache_hits_total[5m]) / (rate(ml_cache_hits_total[5m]) + rate(ml_cache_misses_total[5m]))) * 100 < 70
+        for: 10m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache {{ $labels.cache_type }} hit rate is {{ $value }}%"
+
+      - alert: CacheSizeLimit
+        expr: ml_cache_size_bytes > 1073741824  # 1GB
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Cache size approaching limit"
+          description: "Cache {{ $labels.cache_type }} size is {{ $value | humanizeBytes }}"
+
+  - name: business_alerts
+    rules:
+      # Business Metrics Alerts
+      - alert: LowInsightGeneration
+        expr: rate(business_user_insights_generated_total[1h]) < 0.1
+        for: 30m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "Low insight generation rate"
+          description: "Insight generation rate is {{ $value }} insights/hour"
+
+      - alert: HighAnomalyRate
+        expr: rate(business_anomaly_detections_total[1h]) > 10
+        for: 15m
+        labels:
+          severity: warning
+          component: business
+        annotations:
+          summary: "High anomaly detection rate"
+          description: "Anomaly detection rate is {{ $value }} anomalies/hour"
+
+      - alert: NoUserActivity
+        expr: rate(business_user_interactions_total[1h]) == 0
+        for: 2h
+        labels:
+          severity: critical
+          component: business
+        annotations:
+          summary: "No user activity detected"
+          description: "No user interactions recorded for 2 hours"
+
+  - name: infrastructure_alerts
+    rules:
+      # Infrastructure Alerts
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Service {{ $labels.job }} on {{ $labels.instance }} has been down for more than 1 minute"
+
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "High HTTP error rate"
+          description: "HTTP error rate is {{ $value | humanizePercentage }} for {{ $labels.job }}"
+
+      - alert: DatabaseConnectionFailure
+        expr: postgres_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection failure"
+          description: "Cannot connect to PostgreSQL database"
+
+      - alert: RedisConnectionFailure
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis connection failure"
+          description: "Cannot connect to Redis cache"
+
+  - name: performance_alerts
+    rules:
+      # Performance Alerts
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High response time"
+          description: "95th percentile response time is {{ $value }}s"
+
+      - alert: HighThroughputDrop
+        expr: (rate(http_requests_total[5m]) / rate(http_requests_total[5m] offset 1h)) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "Significant throughput drop"
+          description: "Request throughput dropped by {{ $value | humanizePercentage }} compared to 1 hour ago"
+
+      - alert: DiskSpaceRunningOut
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "Disk space running out"
+          description: "Disk space on {{ $labels.device }} is {{ $value }}% full"

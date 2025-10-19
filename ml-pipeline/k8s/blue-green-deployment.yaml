@@ -1,0 +1,309 @@
+# Blue-Green Deployment Configuration for ML Models
+# This configuration enables zero-downtime deployments with traffic splitting
+
+# Blue Deployment (Current Production)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-pipeline-blue
+  namespace: finbot-ml
+  labels:
+    app: ml-pipeline
+    version: blue
+    deployment-type: blue-green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ml-pipeline
+      version: blue
+  template:
+    metadata:
+      labels:
+        app: ml-pipeline
+        version: blue
+        deployment-type: blue-green
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: ml-pipeline-sa
+      containers:
+      - name: ml-pipeline
+        image: finbot/ml-pipeline:stable
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: DEPLOYMENT_COLOR
+          value: "blue"
+        - name: MODEL_VERSION
+          value: "stable"
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+          readOnly: true
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: ml-model-storage-blue
+
+---
+# Green Deployment (New Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-pipeline-green
+  namespace: finbot-ml
+  labels:
+    app: ml-pipeline
+    version: green
+    deployment-type: blue-green
+spec:
+  replicas: 0  # Initially scaled to 0
+  selector:
+    matchLabels:
+      app: ml-pipeline
+      version: green
+  template:
+    metadata:
+      labels:
+        app: ml-pipeline
+        version: green
+        deployment-type: blue-green
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+    spec:
+      serviceAccountName: ml-pipeline-sa
+      containers:
+      - name: ml-pipeline
+        image: finbot/ml-pipeline:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: DEPLOYMENT_COLOR
+          value: "green"
+        - name: MODEL_VERSION
+          value: "latest"
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+          readOnly: true
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: ml-model-storage-green
+
+---
+# Blue Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-pipeline-blue-service
+  namespace: finbot-ml
+  labels:
+    app: ml-pipeline
+    version: blue
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: ml-pipeline
+    version: blue
+
+---
+# Green Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-pipeline-green-service
+  namespace: finbot-ml
+  labels:
+    app: ml-pipeline
+    version: green
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: ml-pipeline
+    version: green
+
+---
+# Istio VirtualService for Blue-Green Traffic Management
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ml-pipeline-traffic
+  namespace: finbot-ml
+spec:
+  hosts:
+  - ml-pipeline-service
+  http:
+  - match:
+    - headers:
+        canary:
+          exact: "true"
+    route:
+    - destination:
+        host: ml-pipeline-green-service
+        port:
+          number: 80
+      weight: 100
+  - route:
+    - destination:
+        host: ml-pipeline-blue-service
+        port:
+          number: 80
+      weight: 100
+    - destination:
+        host: ml-pipeline-green-service
+        port:
+          number: 80
+      weight: 0
+
+---
+# Istio DestinationRule for Blue-Green
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ml-pipeline-destination
+  namespace: finbot-ml
+spec:
+  host: ml-pipeline-service
+  subsets:
+  - name: blue
+    labels:
+      version: blue
+  - name: green
+    labels:
+      version: green
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+    loadBalancer:
+      simple: ROUND_ROBIN
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+
+---
+# Deployment Controller for Blue-Green Management
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blue-green-config
+  namespace: finbot-ml
+data:
+  deployment-strategy.yaml: |
+    strategy:
+      type: blue-green
+      blueGreen:
+        activeService: ml-pipeline-blue-service
+        previewService: ml-pipeline-green-service
+        autoPromotionEnabled: false
+        scaleDownDelaySeconds: 300
+        prePromotionAnalysis:
+          templates:
+          - templateName: success-rate
+          args:
+          - name: service-name
+            value: ml-pipeline-green-service
+        postPromotionAnalysis:
+          templates:
+          - templateName: success-rate
+          args:
+          - name: service-name
+            value: ml-pipeline-blue-service
+        analysis:
+          successCondition: result[0] >= 0.95
+          failureCondition: result[0] < 0.90
+          interval: 30s
+          count: 5
+
+---
+# Analysis Template for Blue-Green Validation
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: finbot-ml
+spec:
+  args:
+  - name: service-name
+  metrics:
+  - name: success-rate
+    interval: 30s
+    count: 5
+    successCondition: result[0] >= 0.95
+    failureCondition: result[0] < 0.90
+    provider:
+      prometheus:
+        address: http://prometheus:9090
+        query: |
+          sum(rate(http_requests_total{service="{{args.service-name}}",status!~"5.."}[2m])) /
+          sum(rate(http_requests_total{service="{{args.service-name}}"}[2m]))
+  - name: avg-response-time
+    interval: 30s
+    count: 5
+    successCondition: result[0] < 1000
+    failureCondition: result[0] > 2000
+    provider:
+      prometheus:
+        address: http://prometheus:9090
+        query: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{service="{{args.service-name}}"}[2m])) by (le)
+          ) * 1000

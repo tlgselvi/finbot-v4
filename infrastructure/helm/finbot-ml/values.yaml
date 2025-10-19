@@ -1,0 +1,304 @@
+# Default values for finbot-ml
+# This is a YAML-formatted file.
+
+# Global configuration
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  storageClass: ""
+  
+# Namespace configuration
+namespace:
+  create: true
+  name: finbot-ml
+  labels:
+    environment: production
+    component: ml-infrastructure
+
+# ML Pipeline configuration
+mlPipeline:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: finbot/ml-pipeline
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 8080
+    
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+      
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    
+  config:
+    logLevel: "INFO"
+    environment: "production"
+    
+# Model Serving configuration
+modelServing:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: finbot/model-serving
+    tag: "latest"
+    pullPolicy: IfNotPresent
+    
+  service:
+    type: ClusterIP
+    port: 8080
+    adminPort: 8081
+    metricsPort: 9090
+    
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+      
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    
+  config:
+    batchSize: 16
+    maxWorkers: 4
+    
+# GPU Inference configuration
+gpuInference:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: finbot/gpu-inference
+    tag: "latest"
+    pullPolicy: IfNotPresent
+    
+  service:
+    type: ClusterIP
+    port: 8080
+    metricsPort: 9090
+    
+  resources:
+    requests:
+      cpu: "2"
+      memory: "8Gi"
+      nvidia.com/gpu: 1
+    limits:
+      cpu: "4"
+      memory: "16Gi"
+      nvidia.com/gpu: 1
+      
+  nodeSelector:
+    accelerator: nvidia-tesla-k80
+    
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+      
+  config:
+    batchSize: 32
+    maxSequenceLength: 512
+
+# Blue-Green Deployment configuration
+deployment:
+  blueGreen:
+    enabled: true
+    image:
+      repository: finbot/ml-analytics
+      tag: "latest"
+      pullPolicy: IfNotPresent
+      
+    replicaCount: 4
+    previewReplicaCount: 2
+    
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"
+        
+    analysis:
+      successRate:
+        enabled: true
+        threshold: 0.95
+        interval: 30s
+        count: 5
+      responseTime:
+        enabled: true
+        threshold: 0.5
+        interval: 30s
+        count: 5
+
+# Storage configuration
+storage:
+  modelStorage:
+    enabled: true
+    size: 100Gi
+    storageClass: "fast-ssd"
+    accessMode: ReadWriteMany
+    
+  prometheusStorage:
+    enabled: true
+    size: 50Gi
+    storageClass: "standard"
+    accessMode: ReadWriteOnce
+    
+  grafanaStorage:
+    enabled: true
+    size: 10Gi
+    storageClass: "standard"
+    accessMode: ReadWriteOnce
+
+# Monitoring configuration
+monitoring:
+  prometheus:
+    enabled: true
+    retention: "30d"
+    scrapeInterval: "15s"
+    
+  grafana:
+    enabled: true
+    adminPassword: "admin123"  # Change in production
+    
+  alerts:
+    enabled: true
+    
+# Security configuration
+security:
+  secrets:
+    create: true
+    databaseUrl: "postgresql://user:password@postgres:5432/ml_database"
+    redisUrl: "redis://redis-service:6379"
+    
+  rbac:
+    create: true
+    
+  networkPolicies:
+    enabled: true
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  hosts:
+    - host: ml-api.finbot.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: ml-analytics-tls
+      hosts:
+        - ml-api.finbot.com
+
+# Kubeflow Pipelines configuration
+kubeflow:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  
+  dataPreparation:
+    image:
+      repository: finbot/data-preparation
+      tag: "latest"
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+        
+  featureEngineering:
+    image:
+      repository: finbot/feature-engineering
+      tag: "latest"
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+        
+  modelTraining:
+    image:
+      repository: finbot/model-training
+      tag: "latest"
+    resources:
+      requests:
+        cpu: "4"
+        memory: "8Gi"
+        nvidia.com/gpu: 1
+      limits:
+        cpu: "8"
+        memory: "16Gi"
+        nvidia.com/gpu: 1
+        
+  modelValidation:
+    image:
+      repository: finbot/model-validation
+      tag: "latest"
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+        
+  modelDeployment:
+    image:
+      repository: finbot/model-deployment
+      tag: "latest"
+    resources:
+      requests:
+        cpu: "1"
+        memory: "2Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+
+# Resource quotas and limits
+resourceQuota:
+  enabled: true
+  hard:
+    requests.cpu: "20"
+    requests.memory: "40Gi"
+    requests.nvidia.com/gpu: "4"
+    limits.cpu: "40"
+    limits.memory: "80Gi"
+    limits.nvidia.com/gpu: "4"
+    persistentvolumeclaims: "10"
+    services: "20"
+    secrets: "20"
+    configmaps: "20"
+
+limitRange:
+  enabled: true
+  default:
+    cpu: "2"
+    memory: "4Gi"
+  defaultRequest:
+    cpu: "500m"
+    memory: "1Gi"

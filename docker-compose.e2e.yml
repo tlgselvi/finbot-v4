@@ -1,0 +1,253 @@
+version: '3.8'
+
+services:
+  # Database services
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: e2e_ml_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_e2e_data:/var/lib/postgresql/data
+      - ./tests/fixtures/sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_e2e_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Full ML Infrastructure Stack
+  ml-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml-pipeline
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/e2e_ml_db
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=e2e
+      - LOG_LEVEL=INFO
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  model-serving:
+    build:
+      context: .
+      dockerfile: Dockerfile.model-serving
+    environment:
+      - MODEL_STORE_PATH=/models
+      - BATCH_SIZE=16
+      - MAX_WORKERS=4
+      - ENVIRONMENT=e2e
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    volumes:
+      - ./models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  gpu-inference:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu-inference
+    environment:
+      - MODEL_PATH=/models
+      - BATCH_SIZE=32
+      - ENVIRONMENT=e2e
+    ports:
+      - "8082:8080"
+      - "9092:9090"
+    volumes:
+      - ./models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Analytics API
+  analytics-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics-api
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/e2e_ml_db
+      - REDIS_URL=redis://redis:6379
+      - ML_PIPELINE_URL=http://ml-pipeline:8080
+      - MODEL_SERVING_URL=http://model-serving:8080
+      - GPU_INFERENCE_URL=http://gpu-inference:8080
+      - ENVIRONMENT=e2e
+      - LOG_LEVEL=INFO
+    ports:
+      - "8083:8080"
+      - "9093:9090"
+    depends_on:
+      ml-pipeline:
+        condition: service_healthy
+      model-serving:
+        condition: service_healthy
+      gpu-inference:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Frontend Dashboard (for E2E UI tests)
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    environment:
+      - REACT_APP_API_URL=http://analytics-api:8080
+      - REACT_APP_ENVIRONMENT=e2e
+    ports:
+      - "3000:3000"
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Mobile App Backend (for mobile E2E tests)
+  mobile-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.mobile-api
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/e2e_ml_db
+      - ANALYTICS_API_URL=http://analytics-api:8080
+      - ENVIRONMENT=e2e
+    ports:
+      - "8084:8080"
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./tests/config/prometheus-e2e.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=2h'
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./tests/config/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml
+      - ./tests/config/grafana/dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml
+      - ./tests/config/grafana/dashboards:/var/lib/grafana/dashboards
+
+  # Load balancer/reverse proxy
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./tests/config/nginx.conf:/etc/nginx/nginx.conf
+      - ./tests/config/ssl:/etc/nginx/ssl
+    depends_on:
+      - analytics-api
+      - dashboard
+      - mobile-api
+
+  # Test data seeder
+  data-seeder:
+    build:
+      context: .
+      dockerfile: Dockerfile.data-seeder
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/e2e_ml_db
+      - REDIS_URL=redis://redis:6379
+      - API_URL=http://analytics-api:8080
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    volumes:
+      - ./tests/fixtures/e2e-data:/data
+    command: python seed_e2e_data.py
+
+  # Selenium Grid for browser testing
+  selenium-hub:
+    image: selenium/hub:4.0.0
+    ports:
+      - "4444:4444"
+
+  selenium-chrome:
+    image: selenium/node-chrome:4.0.0
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      - HUB_HOST=selenium-hub
+      - HUB_PORT=4444
+
+  selenium-firefox:
+    image: selenium/node-firefox:4.0.0
+    shm_size: 2gb
+    depends_on:
+      - selenium-hub
+    environment:
+      - HUB_HOST=selenium-hub
+      - HUB_PORT=4444
+
+volumes:
+  postgres_e2e_data:
+  redis_e2e_data:
+
+networks:
+  default:
+    name: finbot-ml-e2e

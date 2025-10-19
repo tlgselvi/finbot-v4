@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  # Database services
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: test_ml_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./tests/fixtures/sql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:6-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_test_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ML Services
+  ml-pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.ml-pipeline
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/test_ml_db
+      - REDIS_URL=redis://redis:6379
+      - ENVIRONMENT=test
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  model-serving:
+    build:
+      context: .
+      dockerfile: Dockerfile.model-serving
+    environment:
+      - MODEL_STORE_PATH=/models
+      - BATCH_SIZE=8
+      - MAX_WORKERS=2
+      - ENVIRONMENT=test
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    volumes:
+      - ./models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  gpu-inference:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu-inference
+    environment:
+      - MODEL_PATH=/models
+      - BATCH_SIZE=16
+      - ENVIRONMENT=test
+    ports:
+      - "8082:8080"
+      - "9092:9090"
+    volumes:
+      - ./models:/models
+    # Note: GPU support would require nvidia-docker runtime
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Analytics API
+  analytics-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.analytics-api
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/test_ml_db
+      - REDIS_URL=redis://redis:6379
+      - ML_PIPELINE_URL=http://ml-pipeline:8080
+      - MODEL_SERVING_URL=http://model-serving:8080
+      - GPU_INFERENCE_URL=http://gpu-inference:8080
+      - ENVIRONMENT=test
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8083:8080"
+      - "9093:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-pipeline:
+        condition: service_healthy
+      model-serving:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring services for testing
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./tests/config/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=1h'
+
+  # Test data generator
+  test-data-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.test-data-generator
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/test_ml_db
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./data:/data
+    command: python generate_test_data.py
+
+volumes:
+  postgres_test_data:
+  redis_test_data:
+
+networks:
+  default:
+    name: finbot-ml-test

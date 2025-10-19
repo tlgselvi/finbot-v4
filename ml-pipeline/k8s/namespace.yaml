@@ -1,0 +1,47 @@
+# Kubernetes Namespace for FinBot ML Infrastructure
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: finbot-ml
+  labels:
+    name: finbot-ml
+    environment: production
+    team: ml-engineering
+---
+# Resource Quota for ML namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: ml-resource-quota
+  namespace: finbot-ml
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    requests.nvidia.com/gpu: "4"
+    limits.cpu: "40"
+    limits.memory: 80Gi
+    limits.nvidia.com/gpu: "4"
+    persistentvolumeclaims: "10"
+    services: "20"
+    secrets: "20"
+    configmaps: "20"
+---
+# Limit Range for ML workloads
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: ml-limit-range
+  namespace: finbot-ml
+spec:
+  limits:
+  - default:
+      cpu: "2"
+      memory: "4Gi"
+    defaultRequest:
+      cpu: "500m"
+      memory: "1Gi"
+    type: Container
+  - default:
+      storage: "10Gi"
+    type: PersistentVolumeClaim

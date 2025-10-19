@@ -1,0 +1,70 @@
+# ML dependencies for FinBot ML Analytics
+
+# Core ML frameworks
+scikit-learn>=1.3.0
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Deep learning (optional)
+torch>=2.0.0
+tensorflow>=2.13.0
+
+# Feature engineering
+feature-engine>=1.6.0
+category-encoders>=2.6.0
+
+# Model serving
+mlflow>=2.5.0
+joblib>=1.3.0
+pickle5>=0.0.12
+
+# Data validation
+great-expectations>=0.17.0
+pandera>=0.15.0
+
+# Hyperparameter tuning
+optuna>=3.2.0
+hyperopt>=0.2.7
+
+# Model interpretation
+shap>=0.42.0
+lime>=0.2.0.1
+
+# Time series (if needed)
+statsmodels>=0.14.0
+prophet>=1.1.4
+
+# Anomaly detection
+pyod>=1.1.0
+isolation-forest>=0.1.2
+
+# Natural language processing (if needed)
+nltk>=3.8.0
+spacy>=3.6.0
+transformers>=4.21.0
+
+# Computer vision (if needed)
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# Distributed computing
+dask>=2023.7.0
+ray>=2.5.0
+
+# Model monitoring
+evidently>=0.4.0
+whylogs>=1.3.0
+
+# Data processing
+polars>=0.18.0
+pyarrow>=12.0.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# Utilities
+tqdm>=4.65.0
+click>=8.1.0

@@ -1,0 +1,27 @@
+# Grafana Dashboard Provisioning Configuration
+# This configuration automatically loads dashboards from the filesystem
+
+apiVersion: 1
+
+providers:
+  # ML Analytics Dashboards
+  - name: 'ml-analytics'
+    orgId: 1
+    folder: 'ML Analytics'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      
+  # System Dashboards
+  - name: 'system-monitoring'
+    orgId: 1
+    folder: 'System Monitoring'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

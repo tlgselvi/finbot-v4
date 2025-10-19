@@ -1,0 +1,269 @@
+# Production Model Serving with TensorFlow Serving and Seldon Core
+apiVersion: machinelearning.seldon.io/v1
+kind: SeldonDeployment
+metadata:
+  name: finbot-ml-models
+  namespace: finbot-ml
+  labels:
+    app: model-serving
+    version: v1
+spec:
+  name: finbot-ml-models
+  protocol: tensorflow
+  transport: rest
+  replicas: 3
+  predictors:
+  - name: spending-predictor
+    graph:
+      name: spending-predictor
+      implementation: TENSORFLOW_SERVER
+      modelUri: gs://finbot-ml-models/spending-predictor/v1
+      envSecretRefName: model-serving-secrets
+      parameters:
+      - name: model_name
+        value: spending_predictor
+        type: STRING
+      - name: model_version
+        value: "1"
+        type: STRING
+    componentSpecs:
+    - spec:
+        containers:
+        - name: spending-predictor
+          image: tensorflow/serving:2.13.0-gpu
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          env:
+          - name: MODEL_NAME
+            value: spending_predictor
+          - name: MODEL_BASE_PATH
+            value: /models/spending_predictor
+          - name: TENSORFLOW_SERVING_PORT
+            value: "8500"
+          - name: TENSORFLOW_SERVING_REST_PORT
+            value: "8501"
+          ports:
+          - containerPort: 8500
+            name: grpc
+          - containerPort: 8501
+            name: http
+          livenessProbe:
+            httpGet:
+              path: /v1/models/spending_predictor
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/models/spending_predictor
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          volumeMounts:
+          - name: model-storage
+            mountPath: /models
+            readOnly: true
+        volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: ml-model-storage
+    replicas: 2
+    
+  - name: anomaly-detector
+    graph:
+      name: anomaly-detector
+      implementation: TENSORFLOW_SERVER
+      modelUri: gs://finbot-ml-models/anomaly-detector/v1
+      envSecretRefName: model-serving-secrets
+      parameters:
+      - name: model_name
+        value: anomaly_detector
+        type: STRING
+      - name: model_version
+        value: "1"
+        type: STRING
+    componentSpecs:
+    - spec:
+        containers:
+        - name: anomaly-detector
+          image: tensorflow/serving:2.13.0
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1"
+              memory: "2Gi"
+          env:
+          - name: MODEL_NAME
+            value: anomaly_detector
+          - name: MODEL_BASE_PATH
+            value: /models/anomaly_detector
+          ports:
+          - containerPort: 8500
+            name: grpc
+          - containerPort: 8501
+            name: http
+          livenessProbe:
+            httpGet:
+              path: /v1/models/anomaly_detector
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/models/anomaly_detector
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          volumeMounts:
+          - name: model-storage
+            mountPath: /models
+            readOnly: true
+        volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: ml-model-storage
+    replicas: 2
+
+  - name: risk-assessor
+    graph:
+      name: risk-assessor
+      implementation: TENSORFLOW_SERVER
+      modelUri: gs://finbot-ml-models/risk-assessor/v1
+      envSecretRefName: model-serving-secrets
+      parameters:
+      - name: model_name
+        value: risk_assessor
+        type: STRING
+      - name: model_version
+        value: "1"
+        type: STRING
+    componentSpecs:
+    - spec:
+        containers:
+        - name: risk-assessor
+          image: tensorflow/serving:2.13.0
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1.5Gi"
+            limits:
+              cpu: "2"
+              memory: "3Gi"
+          env:
+          - name: MODEL_NAME
+            value: risk_assessor
+          - name: MODEL_BASE_PATH
+            value: /models/risk_assessor
+          ports:
+          - containerPort: 8500
+            name: grpc
+          - containerPort: 8501
+            name: http
+          livenessProbe:
+            httpGet:
+              path: /v1/models/risk_assessor
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /v1/models/risk_assessor
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 5
+          volumeMounts:
+          - name: model-storage
+            mountPath: /models
+            readOnly: true
+        volumes:
+        - name: model-storage
+          persistentVolumeClaim:
+            claimName: ml-model-storage
+    replicas: 2
+
+---
+# Model Serving Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-serving-service
+  namespace: finbot-ml
+  labels:
+    app: model-serving
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  - port: 8500
+    targetPort: 8500
+    protocol: TCP
+    name: grpc
+  selector:
+    seldon-deployment-id: finbot-ml-models
+
+---
+# Istio VirtualService for Model Serving
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: model-serving-vs
+  namespace: finbot-ml
+spec:
+  hosts:
+  - model-serving-service
+  http:
+  - match:
+    - uri:
+        prefix: /seldon/finbot-ml/finbot-ml-models/
+    route:
+    - destination:
+        host: model-serving-service
+        port:
+          number: 80
+    timeout: 30s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+
+---
+# Istio DestinationRule for Model Serving
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: model-serving-dr
+  namespace: finbot-ml
+spec:
+  host: model-serving-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+    loadBalancer:
+      simple: LEAST_CONN
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50

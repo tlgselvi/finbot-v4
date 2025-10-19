@@ -1,0 +1,190 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: ml-analytics-rollout
+  namespace: finbot-ml
+  labels:
+    app: ml-analytics
+    component: blue-green-deployment
+spec:
+  replicas: 4
+  strategy:
+    blueGreen:
+      activeService: ml-analytics-active
+      previewService: ml-analytics-preview
+      autoPromotionEnabled: false
+      scaleDownDelaySeconds: 30
+      prePromotionAnalysis:
+        templates:
+        - templateName: success-rate
+        args:
+        - name: service-name
+          value: ml-analytics-preview.finbot-ml.svc.cluster.local
+      postPromotionAnalysis:
+        templates:
+        - templateName: success-rate
+        args:
+        - name: service-name
+          value: ml-analytics-active.finbot-ml.svc.cluster.local
+      previewReplicaCount: 2
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ml-analytics
+  template:
+    metadata:
+      labels:
+        app: ml-analytics
+    spec:
+      containers:
+      - name: ml-analytics
+        image: finbot/ml-analytics:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: MODEL_SERVING_URL
+          value: "http://model-serving-service:8080"
+        - name: GPU_INFERENCE_URL
+          value: "http://gpu-inference-service:8080"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-analytics-secrets
+              key: database-url
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: ml-analytics-secrets
+              key: redis-url
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "1"
+            memory: "2Gi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ml-analytics-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-analytics-active
+  namespace: finbot-ml
+  labels:
+    app: ml-analytics
+    service-type: active
+spec:
+  selector:
+    app: ml-analytics
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ml-analytics-preview
+  namespace: finbot-ml
+  labels:
+    app: ml-analytics
+    service-type: preview
+spec:
+  selector:
+    app: ml-analytics
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: finbot-ml
+spec:
+  args:
+  - name: service-name
+  metrics:
+  - name: success-rate
+    interval: 30s
+    count: 5
+    successCondition: result[0] >= 0.95
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus-server.monitoring.svc.cluster.local:80
+        query: |
+          sum(rate(http_requests_total{service="{{args.service-name}}",code!~"5.."}[2m])) /
+          sum(rate(http_requests_total{service="{{args.service-name}}"}[2m]))
+  - name: avg-response-time
+    interval: 30s
+    count: 5
+    successCondition: result[0] <= 0.5
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus-server.monitoring.svc.cluster.local:80
+        query: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{service="{{args.service-name}}"}[2m])) by (le)
+          )
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ml-analytics-ingress
+  namespace: finbot-ml
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+spec:
+  tls:
+  - hosts:
+    - ml-api.finbot.com
+    secretName: ml-analytics-tls
+  rules:
+  - host: ml-api.finbot.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: ml-analytics-active
+            port:
+              number: 8080

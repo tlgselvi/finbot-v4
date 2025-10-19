@@ -1,0 +1,33 @@
+apiVersion: v2
+name: finbot-ml
+description: A Helm chart for FinBot ML Infrastructure
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - finbot
+  - machine-learning
+  - kubernetes
+  - ml-infrastructure
+home: https://github.com/finbot/ml-infrastructure
+sources:
+  - https://github.com/finbot/ml-infrastructure
+maintainers:
+  - name: FinBot ML Team
+    email: ml-team@finbot.com
+dependencies:
+  - name: prometheus
+    version: "15.x.x"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: monitoring.prometheus.enabled
+  - name: grafana
+    version: "6.x.x"
+    repository: https://grafana.github.io/helm-charts
+    condition: monitoring.grafana.enabled
+  - name: argo-rollouts
+    version: "2.x.x"
+    repository: https://argoproj.github.io/argo-helm
+    condition: deployment.blueGreen.enabled
+annotations:
+  category: Machine Learning
+  licenses: MIT

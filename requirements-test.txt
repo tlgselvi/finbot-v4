@@ -1,0 +1,80 @@
+# Testing dependencies for FinBot ML Analytics
+
+# Core testing framework
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-xdist>=3.3.0
+pytest-mock>=3.11.0
+pytest-timeout>=2.1.0
+pytest-html>=3.2.0
+
+# HTTP testing
+httpx>=0.24.0
+requests>=2.31.0
+responses>=0.23.0
+
+# Database testing
+pytest-postgresql>=5.0.0
+sqlalchemy>=2.0.0
+alembic>=1.11.0
+
+# Cache testing
+fakeredis>=2.16.0
+redis>=4.6.0
+
+# Data manipulation and validation
+pandas>=2.0.0
+numpy>=1.24.0
+faker>=19.0.0
+
+# Mock and fixtures
+factory-boy>=3.3.0
+freezegun>=1.2.0
+
+# Performance testing
+locust>=2.15.0
+memory-profiler>=0.61.0
+psutil>=5.9.0
+
+# Security testing
+bandit>=1.7.0
+safety>=2.3.0
+
+# Code quality
+black>=23.7.0
+isort>=5.12.0
+flake8>=6.0.0
+mypy>=1.5.0
+pylint>=2.17.0
+
+# Browser testing (E2E)
+selenium>=4.11.0
+playwright>=1.36.0
+
+# API testing
+jsonschema>=4.19.0
+pydantic>=2.1.0
+
+# Kubernetes testing
+kubernetes>=27.2.0
+
+# ML testing utilities
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Monitoring and metrics
+prometheus-client>=0.17.0
+
+# Configuration and environment
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+
+# Utilities
+click>=8.1.0
+tqdm>=4.65.0
+colorama>=0.4.6
+
+# Development utilities
+ipython>=8.14.0
+jupyter>=1.0.0

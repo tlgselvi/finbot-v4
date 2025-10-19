@@ -1,0 +1,325 @@
+# Kubeflow Pipeline for ML Model Training and Deployment
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  name: finbot-ml-training-pipeline
+  namespace: finbot-ml
+  labels:
+    pipeline: ml-training
+    version: v1
+spec:
+  entrypoint: ml-training-pipeline
+  serviceAccountName: kubeflow-pipeline-sa
+  
+  # Pipeline arguments
+  arguments:
+    parameters:
+    - name: model-name
+      value: "spending_predictor"
+    - name: model-version
+      value: "v1"
+    - name: training-data-path
+      value: "gs://finbot-ml-data/training/"
+    - name: model-output-path
+      value: "gs://finbot-ml-models/"
+    - name: validation-threshold
+      value: "0.85"
+  
+  # Volume templates
+  volumeClaimTemplates:
+  - metadata:
+      name: training-workspace
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 50Gi
+      storageClassName: fast-ssd
+  
+  templates:
+  # Main pipeline template
+  - name: ml-training-pipeline
+    dag:
+      tasks:
+      # Data validation and preparation
+      - name: validate-data
+        template: data-validation
+        arguments:
+          parameters:
+          - name: data-path
+            value: "{{workflow.parameters.training-data-path}}"
+      
+      # Feature engineering
+      - name: feature-engineering
+        template: feature-engineering
+        dependencies: [validate-data]
+        arguments:
+          parameters:
+          - name: input-data
+            value: "{{tasks.validate-data.outputs.parameters.validated-data-path}}"
+      
+      # Model training
+      - name: train-model
+        template: model-training
+        dependencies: [feature-engineering]
+        arguments:
+          parameters:
+          - name: model-name
+            value: "{{workflow.parameters.model-name}}"
+          - name: features-path
+            value: "{{tasks.feature-engineering.outputs.parameters.features-path}}"
+      
+      # Model validation
+      - name: validate-model
+        template: model-validation
+        dependencies: [train-model]
+        arguments:
+          parameters:
+          - name: model-path
+            value: "{{tasks.train-model.outputs.parameters.model-path}}"
+          - name: validation-threshold
+            value: "{{workflow.parameters.validation-threshold}}"
+      
+      # Model deployment (conditional)
+      - name: deploy-model
+        template: model-deployment
+        dependencies: [validate-model]
+        when: "{{tasks.validate-model.outputs.parameters.validation-passed}} == true"
+        arguments:
+          parameters:
+          - name: model-path
+            value: "{{tasks.train-model.outputs.parameters.model-path}}"
+          - name: model-name
+            value: "{{workflow.parameters.model-name}}"
+          - name: model-version
+            value: "{{workflow.parameters.model-version}}"
+
+  # Data validation template
+  - name: data-validation
+    inputs:
+      parameters:
+      - name: data-path
+    container:
+      image: finbot/data-validator:latest
+      command: [python, validate_data.py]
+      args:
+      - --input-path={{inputs.parameters.data-path}}
+      - --output-path=/workspace/validated-data
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+      volumeMounts:
+      - name: training-workspace
+        mountPath: /workspace
+    outputs:
+      parameters:
+      - name: validated-data-path
+        valueFrom:
+          path: /workspace/validated-data-path.txt
+
+  # Feature engineering template
+  - name: feature-engineering
+    inputs:
+      parameters:
+      - name: input-data
+    container:
+      image: finbot/feature-engineer:latest
+      command: [python, engineer_features.py]
+      args:
+      - --input-path={{inputs.parameters.input-data}}
+      - --output-path=/workspace/features
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      volumeMounts:
+      - name: training-workspace
+        mountPath: /workspace
+    outputs:
+      parameters:
+      - name: features-path
+        valueFrom:
+          path: /workspace/features-path.txt
+
+  # Model training template
+  - name: model-training
+    inputs:
+      parameters:
+      - name: model-name
+      - name: features-path
+    container:
+      image: finbot/model-trainer:latest
+      command: [python, train_model.py]
+      args:
+      - --model-name={{inputs.parameters.model-name}}
+      - --features-path={{inputs.parameters.features-path}}
+      - --output-path=/workspace/trained-model
+      resources:
+        requests:
+          cpu: "4"
+          memory: "8Gi"
+          nvidia.com/gpu: 1
+        limits:
+          cpu: "8"
+          memory: "16Gi"
+          nvidia.com/gpu: 1
+      volumeMounts:
+      - name: training-workspace
+        mountPath: /workspace
+      nodeSelector:
+        accelerator: nvidia-tesla-v100
+    outputs:
+      parameters:
+      - name: model-path
+        valueFrom:
+          path: /workspace/model-path.txt
+      - name: training-metrics
+        valueFrom:
+          path: /workspace/training-metrics.json
+
+  # Model validation template
+  - name: model-validation
+    inputs:
+      parameters:
+      - name: model-path
+      - name: validation-threshold
+    container:
+      image: finbot/model-validator:latest
+      command: [python, validate_model.py]
+      args:
+      - --model-path={{inputs.parameters.model-path}}
+      - --threshold={{inputs.parameters.validation-threshold}}
+      - --output-path=/workspace/validation-results
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"
+      volumeMounts:
+      - name: training-workspace
+        mountPath: /workspace
+    outputs:
+      parameters:
+      - name: validation-passed
+        valueFrom:
+          path: /workspace/validation-passed.txt
+      - name: validation-metrics
+        valueFrom:
+          path: /workspace/validation-metrics.json
+
+  # Model deployment template
+  - name: model-deployment
+    inputs:
+      parameters:
+      - name: model-path
+      - name: model-name
+      - name: model-version
+    container:
+      image: finbot/model-deployer:latest
+      command: [python, deploy_model.py]
+      args:
+      - --model-path={{inputs.parameters.model-path}}
+      - --model-name={{inputs.parameters.model-name}}
+      - --model-version={{inputs.parameters.model-version}}
+      - --deployment-type=blue-green
+      resources:
+        requests:
+          cpu: "1"
+          memory: "2Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
+      volumeMounts:
+      - name: training-workspace
+        mountPath: /workspace
+    outputs:
+      parameters:
+      - name: deployment-status
+        valueFrom:
+          path: /workspace/deployment-status.txt
+
+---
+# CronWorkflow for Scheduled Model Training
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: scheduled-model-training
+  namespace: finbot-ml
+spec:
+  schedule: "0 2 * * 0"  # Weekly at 2 AM Sunday
+  timezone: "UTC"
+  workflowSpec:
+    entrypoint: ml-training-pipeline
+    arguments:
+      parameters:
+      - name: model-name
+        value: "spending_predictor"
+      - name: model-version
+        value: "{{workflow.creationTimestamp.Y}}{{workflow.creationTimestamp.m}}{{workflow.creationTimestamp.d}}"
+      - name: training-data-path
+        value: "gs://finbot-ml-data/training/latest/"
+      - name: model-output-path
+        value: "gs://finbot-ml-models/"
+      - name: validation-threshold
+        value: "0.85"
+    templates:
+    - name: ml-training-pipeline
+      dag:
+        tasks:
+        - name: validate-data
+          template: data-validation
+        - name: feature-engineering
+          template: feature-engineering
+          dependencies: [validate-data]
+        - name: train-model
+          template: model-training
+          dependencies: [feature-engineering]
+        - name: validate-model
+          template: model-validation
+          dependencies: [train-model]
+        - name: deploy-model
+          template: model-deployment
+          dependencies: [validate-model]
+          when: "{{tasks.validate-model.outputs.parameters.validation-passed}} == true"
+
+---
+# Workflow Template for Reusable Training Pipeline
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: ml-training-template
+  namespace: finbot-ml
+spec:
+  entrypoint: training-pipeline
+  arguments:
+    parameters:
+    - name: model-name
+    - name: model-version
+    - name: training-data-path
+    - name: validation-threshold
+      value: "0.85"
+  templates:
+  - name: training-pipeline
+    dag:
+      tasks:
+      - name: data-prep
+        template: data-preparation
+      - name: training
+        template: model-training
+        dependencies: [data-prep]
+      - name: validation
+        template: model-validation
+        dependencies: [training]
+      - name: deployment
+        template: blue-green-deployment
+        dependencies: [validation]
+        when: "{{tasks.validation.outputs.parameters.passed}} == true"

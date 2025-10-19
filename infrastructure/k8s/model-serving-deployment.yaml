@@ -1,0 +1,182 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-serving-server
+  namespace: finbot-ml
+  labels:
+    app: model-serving-server
+    component: model-serving
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: model-serving-server
+  template:
+    metadata:
+      labels:
+        app: model-serving-server
+    spec:
+      containers:
+      - name: model-serving-server
+        image: finbot/model-serving:latest
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 8081
+          name: admin
+        - containerPort: 9090
+          name: metrics
+        env:
+        - name: ENVIRONMENT
+          value: "production"
+        - name: MODEL_STORE_PATH
+          value: "/models"
+        - name: BATCH_SIZE
+          value: "16"
+        - name: MAX_WORKERS
+          value: "4"
+        - name: PROMETHEUS_PORT
+          value: "9090"
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            cpu: "1"
+            memory: "2Gi"
+          limits:
+            cpu: "2"
+            memory: "4Gi"
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+          readOnly: true
+        - name: config-volume
+          mountPath: /config
+        - name: temp-storage
+          mountPath: /tmp
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: ml-model-storage
+      - name: config-volume
+        configMap:
+          name: model-serving-config
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-serving-service
+  namespace: finbot-ml
+  labels:
+    app: model-serving-server
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+    prometheus.io/path: "/metrics"
+spec:
+  selector:
+    app: model-serving-server
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  - name: admin
+    port: 8081
+    targetPort: 8081
+  - name: metrics
+    port: 9090
+    targetPort: 9090
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: model-serving-config
+  namespace: finbot-ml
+data:
+  config.properties: |
+    inference_address=http://0.0.0.0:8080
+    management_address=http://0.0.0.0:8081
+    metrics_address=http://0.0.0.0:9090
+    number_of_netty_threads=4
+    job_queue_size=10
+    model_store=/models
+    load_models=all
+    batch_size=16
+    max_batch_delay=100
+    response_timeout=120
+    unregister_model_timeout=120
+    decode_input_request=true
+    install_py_dep_per_model=true
+    enable_envvars_config=true
+    cors_allowed_origin=*
+    cors_allowed_methods=GET,POST,PUT,DELETE
+    cors_allowed_headers=*
+  models.yaml: |
+    models:
+      - name: anomaly-detection
+        version: "1.0"
+        url: /models/anomaly-detection/model.mar
+        batch_size: 8
+        max_batch_delay: 50
+        response_timeout: 60
+      - name: risk-assessment
+        version: "1.0"
+        url: /models/risk-assessment/model.mar
+        batch_size: 16
+        max_batch_delay: 100
+        response_timeout: 120
+      - name: budget-optimization
+        version: "1.0"
+        url: /models/budget-optimization/model.mar
+        batch_size: 4
+        max_batch_delay: 200
+        response_timeout: 180
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: model-serving-hpa
+  namespace: finbot-ml
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: model-serving-server
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  - type: Pods
+    pods:
+      metric:
+        name: requests_per_second
+      target:
+        type: AverageValue
+        averageValue: "100"
