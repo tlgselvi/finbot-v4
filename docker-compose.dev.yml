@@ -4,81 +4,54 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    ports:
-      - "5434:5432"
+    container_name: finbot-postgres-dev
     environment:
-      - POSTGRES_DB=finbot
-      - POSTGRES_USER=finbot
-      - POSTGRES_PASSWORD=finbot123
+      - POSTGRES_DB=finbot_dev
+      - POSTGRES_USER=finbot_user
+      - POSTGRES_PASSWORD=finbot_dev_pass
+    ports:
+      - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres_dev_data:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finbot_user -d finbot_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Redis Cache
   redis:
     image: redis:7-alpine
+    container_name: finbot-redis-dev
     ports:
       - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    restart: unless-stopped
     command: redis-server --appendonly yes
-    volumes:
-      - redis-data:/data
-    restart: unless-stopped
 
-  # Backend API (Development)
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.dev
-    ports:
-      - "8000:8000"
-    environment:
-      - NODE_ENV=development
-      - DATABASE_URL=postgresql://finbot:finbot123@postgres:5432/finbot
-      - REDIS_URL=redis://redis:6379
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
-    restart: unless-stopped
-
-  # ML Service (Development)
+  # ML Service
   ml-service:
     build:
       context: ./ml-pipeline
-      dockerfile: Dockerfile.dev
+      dockerfile: Dockerfile
+    container_name: finbot-ml-service-dev
     ports:
       - "8080:8080"
     environment:
       - PYTHONPATH=/app
-      - DATABASE_URL=postgresql://finbot:finbot123@postgres:5432/finbot
-      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://finbot_user:finbot_dev_pass@postgres:5432/finbot_dev
     depends_on:
       - postgres
-      - redis
+    restart: unless-stopped
     volumes:
       - ./ml-pipeline:/app
-    restart: unless-stopped
-
-  # Frontend Web App (Development)
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.dev
-    ports:
-      - "3000:3000"
-    environment:
-      - NODE_ENV=development
-      - NEXT_PUBLIC_API_URL=http://backend:8000
-      - NEXT_PUBLIC_ML_API_URL=http://ml-service:8080
-    depends_on:
-      - backend
-    volumes:
-      - .:/app
-      - /app/node_modules
-    restart: unless-stopped
 
 volumes:
-  postgres-data:
-  redis-data:
+  postgres_dev_data:
+  redis_dev_data:
+
+networks:
+  default:
+    name: finbot-dev-network

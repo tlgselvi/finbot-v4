@@ -1,12 +1,12 @@
-import Redis from 'redis';
+import { createClient } from 'redis';
 
-let redis: Redis.RedisClientType | null = null;
+let redis: ReturnType<typeof createClient> | null = null;
 
 export async function connectRedis() {
   try {
     const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
     
-    redis = Redis.createClient({
+    redis = createClient({
       url: redisUrl,
     });
 
@@ -46,7 +46,7 @@ export async function disconnectRedis() {
   }
 }
 
-export function getRedisClient(): Redis.RedisClientType {
+export function getRedisClient(): ReturnType<typeof createClient> {
   if (!redis) {
     throw new Error('Redis client not initialized. Call connectRedis() first.');
   }
@@ -55,9 +55,9 @@ export function getRedisClient(): Redis.RedisClientType {
 
 // Cache utilities
 export class CacheManager {
-  private client: Redis.RedisClientType;
+  private client: ReturnType<typeof createClient>;
 
-  constructor(client: Redis.RedisClientType) {
+  constructor(client: ReturnType<typeof createClient>) {
     this.client = client;
   }
 

@@ -1,0 +1,11 @@
+# Core dependencies
+fastapi==0.119.0
+uvicorn[standard]==0.37.0
+pydantic==2.12.3
+
+# Basic ML (without heavy dependencies)
+numpy==1.24.3
+pandas==2.0.3
+
+# HTTP requests for health check
+requests==2.31.0

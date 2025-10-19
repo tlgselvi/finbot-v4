@@ -53,7 +53,7 @@ export async function checkDatabaseHealth() {
 
 // Transaction utility for atomic operations
 export async function withTransaction<T>(
-  callback: (prisma: PrismaClient) => Promise<T>
+  callback: (prisma: Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>) => Promise<T>
 ): Promise<T> {
   return await prisma.$transaction(callback);
 }
