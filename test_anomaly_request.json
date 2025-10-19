@@ -1,0 +1,11 @@
+{
+  "transaction": {
+    "id": "tx_123",
+    "user_id": "user_456",
+    "amount": -250.00,
+    "category": "Food",
+    "description": "Restaurant meal",
+    "timestamp": "2024-01-15T19:30:00Z",
+    "merchant_name": "Expensive Restaurant"
+  }
+}

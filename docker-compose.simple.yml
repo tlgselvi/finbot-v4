@@ -1,81 +1,77 @@
-version: '3.8'
-
 services:
-  finbot-api:
-    image: node:18-alpine
-    ports:
-      - "3003:3001"
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://finbot:finbot123@postgres:5432/finbot_v4
-      - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=your-super-secret-jwt-key-here
-      - API_VERSION=v4.0.0
-    depends_on:
-      - postgres
-      - redis
-    volumes:
-      - ./src:/app/src
-      - ./package.json:/app/package.json
-      - ./node_modules:/app/node_modules
-    working_dir: /app
-    command: node src/app.js
-    networks:
-      - finbot-network
-
-  finbot-web:
-    image: nginx:alpine
-    ports:
-      - "3004:80"
-    volumes:
-      - ./public:/usr/share/nginx/html
-      - ./nginx.conf:/etc/nginx/nginx.conf
-    depends_on:
-      - finbot-api
-    networks:
-      - finbot-network
-
+  # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
     ports:
       - "5434:5432"
     environment:
-      - POSTGRES_DB=finbot_v4
+      - POSTGRES_DB=finbot
       - POSTGRES_USER=finbot
       - POSTGRES_PASSWORD=finbot123
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks:
-      - finbot-network
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finbot -d finbot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
+  # Redis Cache
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --appendonly yes
     volumes:
-      - redis_data:/data
-    networks:
-      - finbot-network
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
-  timescaledb:
-    image: timescale/timescaledb:latest-pg15
+  # Backend API (Basit)
+  backend:
+    image: node:18-alpine
+    working_dir: /app
     ports:
-      - "5433:5432"
+      - "8000:8000"
     environment:
-      - POSTGRES_DB=finbot_timeseries
-      - POSTGRES_USER=finbot
-      - POSTGRES_PASSWORD=finbot123
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://finbot:finbot123@postgres:5432/finbot
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
-      - timescale_data:/var/lib/postgresql/data
-    networks:
-      - finbot-network
+      - ./backend:/app
+    command: sh -c "npm install && npm run dev"
+    restart: unless-stopped
+
+  # ML Service (Basit)
+  ml-service:
+    image: python:3.9-slim
+    working_dir: /app
+    ports:
+      - "8080:8080"
+    environment:
+      - PYTHONPATH=/app
+      - DATABASE_URL=postgresql://finbot:finbot123@postgres:5432/finbot
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./ml-pipeline:/app
+    command: sh -c "pip install fastapi uvicorn && python app.py"
+    restart: unless-stopped
 
 volumes:
-  postgres_data:
-  redis_data:
-  timescale_data:
-
-networks:
-  finbot-network:
-    driver: bridge
+  postgres-data:
+  redis-data:

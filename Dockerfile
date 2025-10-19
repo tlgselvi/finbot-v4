@@ -1,43 +1,42 @@
-# Simplified Dockerfile for FinBot AI Financial Analytics
-FROM node:18-alpine
+# Multi-stage build for AI Financial Analytics Platform
+FROM node:18-alpine AS base
 
-# Install Python for ML services
-RUN apk add --no-cache python3 py3-pip curl
-
-# Create app directory
+# Install dependencies only when needed
+FROM base AS deps
 WORKDIR /app
 
-# Copy package files and install dependencies
-COPY package*.json ./
-RUN npm install --legacy-peer-deps
+# Copy package files
+COPY package.json package-lock.json* ./
+RUN npm ci --only=production && npm cache clean --force
 
-# Copy all source code
+# Rebuild the source code only when needed
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Install backend dependencies
-WORKDIR /app/backend
-RUN npm install --legacy-peer-deps
+# Build the application
+RUN npm run build
 
-# Install ML dependencies
-WORKDIR /app/ml-pipeline
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Back to root
+# Production image, copy all the files and run next
+FROM base AS runner
 WORKDIR /app
 
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S finbot -u 1001 && \
-    chown -R finbot:nodejs /app
+ENV NODE_ENV production
 
-USER finbot
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
 
-# Expose ports
-EXPOSE 3000 8000 8080
+# Copy built application
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+USER nextjs
 
-# Start all services
-CMD ["sh", "-c", "cd /app/ml-pipeline && python app.py & cd /app/backend && npm start & cd /app && npm run dev"]
+EXPOSE 3000
+
+ENV PORT 3000
+ENV HOSTNAME "0.0.0.0"
+
+CMD ["node", "server.js"]

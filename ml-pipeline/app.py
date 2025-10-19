@@ -1,11 +1,27 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict, List, Optional, Any
 import uvicorn
 import os
+import logging
+import asyncio
+from datetime import datetime
+
+# Import ML components
+from services.anomaly_service import AnomalyDetectionService
+from services.risk_service import RiskAssessmentService
+from services.insight_service import InsightGenerationService
+from services.budget_service import BudgetOptimizationService
+from utils.database import DatabaseManager
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="FinBot ML Service",
-    description="AI/ML microservice for financial analytics",
+    description="AI/ML microservice for financial analytics with anomaly detection",
     version="1.0.0"
 )
 
@@ -18,16 +34,718 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global service instances
+anomaly_service: Optional[AnomalyDetectionService] = None
+risk_service: Optional[RiskAssessmentService] = None
+insight_service: Optional[InsightGenerationService] = None
+budget_service: Optional[BudgetOptimizationService] = None
+db_manager: Optional[DatabaseManager] = None
+
+# Pydantic models for request/response
+class TransactionData(BaseModel):
+    id: str
+    user_id: str
+    amount: float
+    category: str
+    description: str
+    timestamp: str
+    merchant_name: Optional[str] = None
+
+class AnomalyDetectionRequest(BaseModel):
+    transaction: TransactionData
+
+class BatchDetectionRequest(BaseModel):
+    user_id: Optional[str] = None
+    hours_back: int = 24
+
+class ModelRetrainRequest(BaseModel):
+    user_id: Optional[str] = None
+    force_retrain: bool = False
+
+class RiskAssessmentRequest(BaseModel):
+    user_id: str
+    force_refresh: bool = False
+
+class InsightGenerationRequest(BaseModel):
+    user_id: str
+    force_refresh: bool = False
+
+class InsightInteractionRequest(BaseModel):
+    insight_id: str
+    user_id: str
+    interaction_type: str
+    interaction_data: Optional[Dict] = None
+
+class BudgetOptimizationRequest(BaseModel):
+    user_id: str
+    optimization_goal: str = "balance_lifestyle"
+    constraints: Optional[Dict] = None
+
+class BudgetPerformanceRequest(BaseModel):
+    user_id: str
+    period_days: int = 30
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup"""
+    global anomaly_service, risk_service, insight_service, budget_service, db_manager
+    
+    try:
+        logger.info("Initializing ML services...")
+        
+        # Initialize database manager (skip if no DB available)
+        db_manager = DatabaseManager()
+        db_url = os.getenv('DATABASE_URL', 'postgresql://localhost:5432/finbot')
+        try:
+            await db_manager.initialize(db_url)
+            # Create necessary tables
+            await db_manager.create_tables()
+        except Exception as e:
+            logger.warning(f"Database initialization failed, continuing without DB: {str(e)}")
+            db_manager = None
+        
+        # Initialize anomaly detection service
+        anomaly_service = AnomalyDetectionService()
+        await anomaly_service.initialize()
+        
+        # Initialize risk assessment service
+        risk_service = RiskAssessmentService()
+        await risk_service.initialize()
+        
+        # Initialize insight generation service
+        insight_service = InsightGenerationService()
+        await insight_service.initialize()
+        
+        # Initialize budget optimization service
+        budget_service = BudgetOptimizationService()
+        await budget_service.initialize()
+        
+        logger.info("ML services initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Startup error: {str(e)}")
+        raise
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup services on shutdown"""
+    global anomaly_service, risk_service, insight_service, budget_service, db_manager
+    
+    try:
+        if anomaly_service:
+            await anomaly_service.cleanup()
+        
+        if risk_service:
+            await risk_service.cleanup()
+        
+        if insight_service:
+            await insight_service.cleanup()
+        
+        if budget_service:
+            await budget_service.cleanup()
+        
+        if db_manager:
+            await db_manager.cleanup()
+        
+        logger.info("ML services cleaned up")
+        
+    except Exception as e:
+        logger.error(f"Shutdown error: {str(e)}")
+
 @app.get("/health")
 async def health_check():
+    """Health check endpoint"""
+    try:
+        # Check service health
+        db_info = await db_manager.get_connection_info() if db_manager else {'status': 'not_initialized'}
+        
+        return {
+            "status": "OK",
+            "service": "FinBot ML Service",
+            "version": "1.0.0",
+            "timestamp": datetime.now().isoformat(),
+            "services": {
+                "anomaly_detection": anomaly_service.is_initialized if anomaly_service else False,
+                "risk_assessment": risk_service.is_initialized if risk_service else False,
+                "insight_generation": insight_service.is_initialized if insight_service else False,
+                "budget_optimization": budget_service.is_initialized if budget_service else False,
+                "database": db_info['status'] == 'connected'
+            },
+            "database": db_info
+        }
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}")
+        return {
+            "status": "ERROR",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/test")
+async def test_endpoint():
+    """Simple test endpoint"""
     return {
-        "status": "OK",
-        "service": "FinBot ML Service",
-        "version": "1.0.0"
+        "message": "Test endpoint working",
+        "anomaly_service_available": anomaly_service is not None,
+        "anomaly_service_initialized": anomaly_service.is_initialized if anomaly_service else False
     }
+
+# Anomaly Detection Endpoints
+
+@app.post("/api/ml/anomaly/detect")
+async def detect_anomaly(request: AnomalyDetectionRequest):
+    """
+    Detect anomaly for a single transaction
+    """
+    try:
+        if not anomaly_service or not anomaly_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Anomaly detection service not available")
+        
+        # Convert Pydantic model to dict
+        transaction_data = request.transaction.dict()
+        
+        # Perform anomaly detection
+        result = await anomaly_service.detect_transaction_anomaly(transaction_data)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Detection failed'))
+        
+        return {
+            "success": True,
+            "transaction_id": transaction_data['id'],
+            "anomaly_detection": {
+                "is_anomaly": result.get('is_anomaly', False),
+                "anomaly_score": result.get('anomaly_score', 0),
+                "confidence": result.get('confidence', 0),
+                "alert_level": result.get('alert_level', 'low'),
+                "explanation": result.get('explanation', {}),
+                "should_alert": result.get('should_alert', False)
+            },
+            "timestamp": result.get('timestamp')
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Anomaly detection error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ml/anomaly/batch")
+async def batch_detect_anomalies(request: BatchDetectionRequest, background_tasks: BackgroundTasks):
+    """
+    Batch process anomaly detection for recent transactions
+    """
+    try:
+        if not anomaly_service or not anomaly_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Anomaly detection service not available")
+        
+        # Run batch detection in background for large datasets
+        if request.hours_back > 168:  # More than 1 week
+            background_tasks.add_task(
+                _background_batch_detection, 
+                request.user_id, 
+                request.hours_back
+            )
+            return {
+                "success": True,
+                "message": "Batch detection started in background",
+                "user_id": request.user_id,
+                "hours_back": request.hours_back
+            }
+        
+        # Run synchronously for smaller datasets
+        result = await anomaly_service.batch_detect_anomalies(
+            request.user_id, 
+            request.hours_back
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Batch detection failed'))
+        
+        return {
+            "success": True,
+            "batch_results": {
+                "processed": result.get('processed', 0),
+                "anomalies_detected": result.get('anomalies_detected', 0),
+                "anomaly_rate": result.get('anomalies_detected', 0) / max(result.get('processed', 1), 1),
+                "results": result.get('results', [])
+            },
+            "user_id": request.user_id,
+            "hours_back": request.hours_back,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Batch anomaly detection error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _background_batch_detection(user_id: Optional[str], hours_back: int):
+    """Background task for batch anomaly detection"""
+    try:
+        result = await anomaly_service.batch_detect_anomalies(user_id, hours_back)
+        logger.info(f"Background batch detection completed: {result}")
+    except Exception as e:
+        logger.error(f"Background batch detection error: {str(e)}")
+
+@app.get("/api/ml/anomaly/statistics/{user_id}")
+async def get_anomaly_statistics(user_id: str, days_back: int = 30):
+    """
+    Get anomaly detection statistics for a user
+    """
+    try:
+        if not anomaly_service or not anomaly_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Anomaly detection service not available")
+        
+        result = await anomaly_service.get_anomaly_statistics(user_id, days_back)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to get statistics'))
+        
+        return {
+            "success": True,
+            "statistics": {
+                "user_id": result.get('user_id'),
+                "period_days": result.get('period_days'),
+                "total_transactions_analyzed": result.get('total_transactions_analyzed', 0),
+                "anomalies_detected": result.get('anomalies_detected', 0),
+                "anomaly_rate": result.get('anomaly_rate', 0),
+                "average_anomaly_score": result.get('average_anomaly_score', 0),
+                "max_anomaly_score": result.get('max_anomaly_score', 0),
+                "active_days": result.get('active_days', 0)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Statistics error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ml/anomaly/retrain")
+async def retrain_model(request: ModelRetrainRequest, background_tasks: BackgroundTasks):
+    """
+    Retrain the anomaly detection model
+    """
+    try:
+        if not anomaly_service or not anomaly_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Anomaly detection service not available")
+        
+        # Run retraining in background
+        background_tasks.add_task(_background_model_retrain, request.user_id)
+        
+        return {
+            "success": True,
+            "message": "Model retraining started in background",
+            "user_id": request.user_id,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Model retrain error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _background_model_retrain(user_id: Optional[str]):
+    """Background task for model retraining"""
+    try:
+        result = await anomaly_service.retrain_model(user_id)
+        logger.info(f"Model retraining completed: {result}")
+    except Exception as e:
+        logger.error(f"Model retraining error: {str(e)}")
+
+@app.get("/api/ml/anomaly/model/info")
+async def get_model_info():
+    """
+    Get information about the current anomaly detection model
+    """
+    try:
+        if not anomaly_service or not anomaly_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Anomaly detection service not available")
+        
+        model_info = anomaly_service.detector.get_model_info()
+        
+        return {
+            "success": True,
+            "model_info": model_info,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Model info error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Insight Generation Endpoints
+
+@app.post("/api/ml/insights/generate")
+async def generate_insights(request: InsightGenerationRequest):
+    """
+    Generate comprehensive financial insights for a user
+    """
+    try:
+        if not insight_service or not insight_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Insight generation service not available")
+        
+        # Generate insights
+        result = await insight_service.generate_user_insights(
+            request.user_id,
+            request.force_refresh
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Insight generation failed'))
+        
+        return {
+            "success": True,
+            "user_id": request.user_id,
+            "insights": result['insights'],
+            "summary": result['summary'],
+            "personalized_recommendations": result['personalized_recommendations'],
+            "timestamp": result['timestamp'],
+            "cached": result.get('cached', False)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Insight generation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/insights/{user_id}")
+async def get_user_insights(user_id: str, 
+                           insight_type: Optional[str] = None,
+                           priority: Optional[str] = None,
+                           limit: int = 10):
+    """
+    Get stored insights for a user with filtering
+    """
+    try:
+        if not insight_service or not insight_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Insight generation service not available")
+        
+        result = await insight_service.get_user_insights(
+            user_id, insight_type, priority, limit
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to get insights'))
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "insights": result['insights'],
+            "filters": result['filters'],
+            "total_count": result['total_count']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get insights error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ml/insights/interaction")
+async def record_insight_interaction(request: InsightInteractionRequest):
+    """
+    Record user interaction with an insight
+    """
+    try:
+        if not insight_service or not insight_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Insight generation service not available")
+        
+        result = await insight_service.record_insight_interaction(
+            request.insight_id,
+            request.user_id,
+            request.interaction_type,
+            request.interaction_data
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to record interaction'))
+        
+        return {
+            "success": True,
+            "insight_id": request.insight_id,
+            "interaction_type": request.interaction_type
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Insight interaction error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/insights/analytics")
+async def get_insight_analytics(user_id: Optional[str] = None, days_back: int = 30):
+    """
+    Get analytics on insight generation and user interactions
+    """
+    try:
+        if not insight_service or not insight_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Insight generation service not available")
+        
+        result = await insight_service.get_insight_analytics(user_id, days_back)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to get analytics'))
+        
+        return {
+            "success": True,
+            "period_days": days_back,
+            "user_id": user_id,
+            "insight_statistics": result['insight_statistics'],
+            "interaction_statistics": result['interaction_statistics'],
+            "engagement_rate": result['engagement_rate']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Insight analytics error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Budget Optimization Endpoints
+
+@app.post("/api/ml/budget/optimize")
+async def optimize_budget(request: BudgetOptimizationRequest):
+    """
+    Generate optimized budget plan for a user
+    """
+    try:
+        if not budget_service or not budget_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Budget optimization service not available")
+        
+        # Optimize budget
+        result = await budget_service.optimize_user_budget(
+            request.user_id,
+            request.optimization_goal,
+            request.constraints
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Budget optimization failed'))
+        
+        return {
+            "success": True,
+            "user_id": request.user_id,
+            "optimized_budget": result['budget_plan'],
+            "optimization_goal": request.optimization_goal
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Budget optimization error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/budget/{user_id}")
+async def get_user_budget(user_id: str):
+    """
+    Get current active budget plan for a user
+    """
+    try:
+        if not budget_service or not budget_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Budget optimization service not available")
+        
+        result = await budget_service.get_user_budget(user_id)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=404, detail=result.get('error', 'Budget not found'))
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "budget_plan": result['budget_plan']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get budget error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/ml/budget/evaluate")
+async def evaluate_budget_performance(request: BudgetPerformanceRequest):
+    """
+    Evaluate budget performance for a user
+    """
+    try:
+        if not budget_service or not budget_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Budget optimization service not available")
+        
+        result = await budget_service.evaluate_budget_performance(
+            request.user_id,
+            request.period_days
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Performance evaluation failed'))
+        
+        return {
+            "success": True,
+            "user_id": request.user_id,
+            "evaluation_period": result['evaluation_period'],
+            "performance": result['performance']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Budget performance evaluation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/budget/adjustments/{user_id}")
+async def get_budget_adjustments(user_id: str):
+    """
+    Get suggested budget adjustments based on performance
+    """
+    try:
+        if not budget_service or not budget_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Budget optimization service not available")
+        
+        result = await budget_service.suggest_budget_adjustments(user_id)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to get adjustments'))
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "current_performance": result['current_performance'],
+            "adjustment_recommendations": result['adjustment_recommendations'],
+            "suggested_changes": result['suggested_changes']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Budget adjustments error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Risk Assessment Endpoints
+
+@app.post("/api/ml/risk/assess")
+async def assess_risk(request: RiskAssessmentRequest):
+    """
+    Perform comprehensive risk assessment for a user
+    """
+    try:
+        if not risk_service or not risk_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Risk assessment service not available")
+        
+        # Perform risk assessment
+        result = await risk_service.assess_user_risk(
+            request.user_id, 
+            request.force_refresh
+        )
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Risk assessment failed'))
+        
+        return {
+            "success": True,
+            "user_id": request.user_id,
+            "risk_assessment": result['assessment'],
+            "timestamp": result['timestamp'],
+            "cached": result.get('cached', False)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Risk assessment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/risk/history/{user_id}")
+async def get_risk_history(user_id: str, days_back: int = 90):
+    """
+    Get risk assessment history for a user
+    """
+    try:
+        if not risk_service or not risk_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Risk assessment service not available")
+        
+        result = await risk_service.get_risk_history(user_id, days_back)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to get risk history'))
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "history": result['history'],
+            "summary": result['summary'],
+            "period_days": days_back
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Risk history error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/risk/recommendations/{user_id}")
+async def get_risk_recommendations(user_id: str):
+    """
+    Get personalized risk mitigation recommendations
+    """
+    try:
+        if not risk_service or not risk_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Risk assessment service not available")
+        
+        result = await risk_service.get_risk_recommendations(user_id)
+        
+        if not result.get('success', False):
+            raise HTTPException(status_code=500, detail=result.get('error', 'Failed to get recommendations'))
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "overall_risk_score": result['overall_risk_score'],
+            "recommendations": result['recommendations'],
+            "general_advice": result['general_advice'],
+            "priority_order": result['priority_order']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Risk recommendations error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ml/risk/model/info")
+async def get_risk_model_info():
+    """
+    Get information about the risk assessment model
+    """
+    try:
+        if not risk_service or not risk_service.is_initialized:
+            raise HTTPException(status_code=503, detail="Risk assessment service not available")
+        
+        model_info = risk_service.risk_assessor.get_model_info()
+        
+        return {
+            "success": True,
+            "model_info": model_info,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Risk model info error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Legacy endpoints (keeping for backward compatibility)
 
 @app.get("/api/ml/predict")
 async def predict():
+    """Legacy prediction endpoint"""
     return {
         "success": True,
         "predictions": {
@@ -37,17 +755,32 @@ async def predict():
         }
     }
 
-@app.post("/api/ml/insights/generate")
-async def generate_insights():
+@app.post("/api/ml/insights/generate/legacy")
+async def generate_insights_legacy():
+    """Legacy insights generation endpoint"""
     return {
         "success": True,
         "insights": [
             {
                 "id": 1,
-                "type": "spending_pattern",
-                "title": "AI Generated Insight",
-                "description": "ML model detected unusual spending pattern",
-                "confidence": 0.92
+                "type": "insight_generation",
+                "title": "Insight Generation Active",
+                "description": "AI-powered insight generation system is analyzing your financial patterns",
+                "confidence": 0.95
+            },
+            {
+                "id": 2,
+                "type": "risk_assessment",
+                "title": "Risk Assessment Active",
+                "description": "Comprehensive financial risk assessment system is monitoring your financial health",
+                "confidence": 0.95
+            },
+            {
+                "id": 3,
+                "type": "anomaly_detection", 
+                "title": "Anomaly Detection Active",
+                "description": "Real-time anomaly detection system is monitoring your transactions",
+                "confidence": 0.95
             }
         ]
     }

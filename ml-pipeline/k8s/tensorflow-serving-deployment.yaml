@@ -1,0 +1,123 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tensorflow-serving
+  namespace: ml-serving
+  labels:
+    app: tensorflow-serving
+    component: model-serving
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: tensorflow-serving
+  template:
+    metadata:
+      labels:
+        app: tensorflow-serving
+    spec:
+      containers:
+      - name: tensorflow-serving
+        image: tensorflow/serving:2.13.0
+        ports:
+        - containerPort: 8501
+          name: http
+        - containerPort: 8500
+          name: grpc
+        env:
+        - name: MODEL_NAME
+          value: "finbot_models"
+        - name: MODEL_BASE_PATH
+          value: "/models"
+        - name: TENSORFLOW_SERVING_ENABLE_BATCHING
+          value: "true"
+        - name: TENSORFLOW_SERVING_MAX_BATCH_SIZE
+          value: "32"
+        - name: TENSORFLOW_SERVING_BATCH_TIMEOUT_MICROS
+          value: "50000"
+        volumeMounts:
+        - name: model-storage
+          mountPath: /models
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /v1/models/finbot_models
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /v1/models/finbot_models
+            port: 8501
+          initialDelaySeconds: 15
+          periodSeconds: 5
+      volumes:
+      - name: model-storage
+        persistentVolumeClaim:
+          claimName: model-storage-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tensorflow-serving-service
+  namespace: ml-serving
+  labels:
+    app: tensorflow-serving
+spec:
+  selector:
+    app: tensorflow-serving
+  ports:
+  - name: http
+    port: 8501
+    targetPort: 8501
+    protocol: TCP
+  - name: grpc
+    port: 8500
+    targetPort: 8500
+    protocol: TCP
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tensorflow-serving-hpa
+  namespace: ml-serving
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tensorflow-serving
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60

@@ -61,6 +61,24 @@ services:
       - ./ml-pipeline:/app
     restart: unless-stopped
 
+  # Frontend Web App (Development)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+      - NEXT_PUBLIC_ML_API_URL=http://ml-service:8080
+    depends_on:
+      - backend
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   redis-data:

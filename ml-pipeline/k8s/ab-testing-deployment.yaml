@@ -1,0 +1,299 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ab-testing-service
+  namespace: ml-serving
+  labels:
+    app: ab-testing-service
+    component: experimentation
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ab-testing-service
+  template:
+    metadata:
+      labels:
+        app: ab-testing-service
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: model-serving-sa
+      containers:
+      - name: ab-testing-service
+        image: finbot/ab-testing-service:v1.0.0
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: REDIS_URL
+          value: "redis://redis-service:6379/2"
+        - name: EXPERIMENT_DB_URL
+          valueFrom:
+            secretKeyRef:
+              name: ab-testing-secrets
+              key: database_url
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: ENABLE_AUTO_PROMOTION
+          value: "true"
+        - name: MIN_SAMPLE_SIZE
+          value: "1000"
+        - name: CONFIDENCE_LEVEL
+          value: "0.95"
+        - name: STATISTICAL_POWER
+          value: "0.8"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 5
+        volumeMounts:
+        - name: experiment-config
+          mountPath: /app/config
+        - name: logs-volume
+          mountPath: /app/logs
+      volumes:
+      - name: experiment-config
+        configMap:
+          name: ab-testing-config
+      - name: logs-volume
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ab-testing-service
+  namespace: ml-serving
+  labels:
+    app: ab-testing-service
+spec:
+  selector:
+    app: ab-testing-service
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ab-testing-config
+  namespace: ml-serving
+data:
+  experiment_config.yaml: |
+    experiment_settings:
+      default_confidence_level: 0.95
+      default_statistical_power: 0.8
+      min_sample_size: 1000
+      max_experiment_duration_days: 30
+      early_stopping_check_interval_hours: 6
+      significance_threshold: 0.05
+    
+    traffic_settings:
+      default_split_strategy: "user_hash"
+      gradual_rollout_step_size: 0.1
+      rollout_interval_hours: 24
+      max_traffic_percentage: 0.5
+    
+    metrics_settings:
+      collection_interval_minutes: 5
+      aggregation_window_minutes: 60
+      retention_days: 90
+      real_time_monitoring: true
+    
+    automation_settings:
+      auto_promotion_enabled: true
+      promotion_criteria:
+        min_improvement_threshold: 0.05
+        min_confidence_level: 0.95
+        min_sample_size: 1000
+      auto_stop_criteria:
+        max_degradation_threshold: -0.1
+        min_confidence_level: 0.99
+  
+  statistical_tests.yaml: |
+    available_tests:
+      - name: "welch_t_test"
+        description: "Welch's t-test for unequal variances"
+        use_case: "Continuous metrics with normal distribution"
+        min_sample_size: 30
+      
+      - name: "mann_whitney"
+        description: "Mann-Whitney U test"
+        use_case: "Non-parametric test for continuous metrics"
+        min_sample_size: 20
+      
+      - name: "chi_square"
+        description: "Chi-square test"
+        use_case: "Categorical metrics and conversion rates"
+        min_sample_size: 50
+      
+      - name: "bootstrap"
+        description: "Bootstrap confidence intervals"
+        use_case: "Any metric type with sufficient data"
+        min_sample_size: 100
+    
+    default_test_selection:
+      continuous_metrics: "welch_t_test"
+      categorical_metrics: "chi_square"
+      conversion_metrics: "chi_square"
+      fallback: "bootstrap"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ab-testing-secrets
+  namespace: ml-serving
+type: Opaque
+data:
+  database_url: cG9zdGdyZXNxbDovL2FiX3Rlc3RpbmdfdXNlcjpzZWN1cmVfcGFzc3dvcmRAcG9zdGdyZXMtc2VydmljZTo1NDMyL2FiX3Rlc3RpbmdfZGI=  # postgresql://ab_testing_user:secure_password@postgres-service:5432/ab_testing_db
+  redis_password: YWJfdGVzdGluZ19yZWRpc19wYXNzd29yZA==  # ab_testing_redis_password
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: experiment-health-check
+  namespace: ml-serving
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: health-checker
+            image: finbot/ab-testing-service:v1.0.0
+            command:
+            - python
+            - -c
+            - |
+              import asyncio
+              from services.ab_testing_service import ABTestingService
+              
+              async def health_check():
+                  service = ABTestingService()
+                  await service.initialize()
+                  # Perform health checks
+                  await service._check_experiment_health()
+                  await service._check_early_stopping_conditions()
+                  await service._check_auto_promotion_conditions()
+                  print("Health check completed")
+              
+              asyncio.run(health_check())
+            env:
+            - name: REDIS_URL
+              value: "redis://redis-service:6379/2"
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "50m"
+              limits:
+                memory: "256Mi"
+                cpu: "100m"
+          restartPolicy: OnFailure
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: experiment-metrics-aggregation
+  namespace: ml-serving
+spec:
+  schedule: "*/15 * * * *"  # Every 15 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: metrics-aggregator
+            image: finbot/ab-testing-service:v1.0.0
+            command:
+            - python
+            - -c
+            - |
+              import asyncio
+              from services.ab_testing_service import ABTestingService
+              
+              async def aggregate_metrics():
+                  service = ABTestingService()
+                  await service.initialize()
+                  await service.metrics_collector.collect_metrics()
+                  print("Metrics aggregation completed")
+              
+              asyncio.run(aggregate_metrics())
+            env:
+            - name: REDIS_URL
+              value: "redis://redis-service:6379/2"
+            resources:
+              requests:
+                memory: "128Mi"
+                cpu: "50m"
+              limits:
+                memory: "256Mi"
+                cpu: "100m"
+          restartPolicy: OnFailure
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ab-testing-network-policy
+  namespace: ml-serving
+spec:
+  podSelector:
+    matchLabels:
+      app: ab-testing-service
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: prediction-api
+    - podSelector:
+        matchLabels:
+          app: tensorflow-serving
+    - podSelector:
+        matchLabels:
+          component: monitoring
+    ports:
+    - protocol: TCP
+      port: 8080
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: redis
+    ports:
+    - protocol: TCP
+      port: 6379
+  - to:
+    - podSelector:
+        matchLabels:
+          app: postgres
+    ports:
+    - protocol: TCP
+      port: 5432
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53

@@ -1,0 +1,150 @@
+apiVersion: machinelearning.seldon.io/v1
+kind: SeldonDeployment
+metadata:
+  name: finbot-ml-models
+  namespace: ml-serving
+  labels:
+    app: finbot-ml-models
+spec:
+  name: finbot-models
+  protocol: tensorflow
+  transport: rest
+  replicas: 2
+  predictors:
+  - name: budget-optimizer
+    replicas: 2
+    componentSpecs:
+    - spec:
+        containers:
+        - name: budget-optimizer
+          image: finbot/budget-optimizer:v1.0.0
+          env:
+          - name: MODEL_NAME
+            value: "budget_optimizer"
+          - name: MODEL_VERSION
+            value: "v1.0.0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+    graph:
+      name: budget-optimizer
+      implementation: SKLEARN_SERVER
+      modelUri: gs://finbot-models/budget-optimizer/v1.0.0
+      parameters:
+      - name: method
+        value: predict_proba
+        type: STRING
+      children: []
+    labels:
+      version: v1
+  - name: risk-assessor
+    replicas: 2
+    componentSpecs:
+    - spec:
+        containers:
+        - name: risk-assessor
+          image: finbot/risk-assessor:v1.0.0
+          env:
+          - name: MODEL_NAME
+            value: "risk_assessor"
+          - name: MODEL_VERSION
+            value: "v1.0.0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+    graph:
+      name: risk-assessor
+      implementation: SKLEARN_SERVER
+      modelUri: gs://finbot-models/risk-assessor/v1.0.0
+      parameters:
+      - name: method
+        value: predict
+        type: STRING
+      children: []
+    labels:
+      version: v1
+  - name: anomaly-detector
+    replicas: 2
+    componentSpecs:
+    - spec:
+        containers:
+        - name: anomaly-detector
+          image: finbot/anomaly-detector:v1.0.0
+          env:
+          - name: MODEL_NAME
+            value: "anomaly_detector"
+          - name: MODEL_VERSION
+            value: "v1.0.0"
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "500m"
+    graph:
+      name: anomaly-detector
+      implementation: SKLEARN_SERVER
+      modelUri: gs://finbot-models/anomaly-detector/v1.0.0
+      parameters:
+      - name: method
+        value: predict_proba
+        type: STRING
+      children: []
+    labels:
+      version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: finbot-ml-models-vs
+  namespace: ml-serving
+spec:
+  hosts:
+  - finbot-ml-models
+  http:
+  - match:
+    - uri:
+        prefix: /api/v1.0/predictions
+    route:
+    - destination:
+        host: finbot-ml-models-budget-optimizer
+      weight: 100
+    fault:
+      delay:
+        percentage:
+          value: 0.1
+        fixedDelay: 5s
+    retries:
+      attempts: 3
+      perTryTimeout: 10s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: finbot-ml-models-dr
+  namespace: ml-serving
+spec:
+  host: finbot-ml-models-budget-optimizer
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        http1MaxPendingRequests: 50
+        maxRequestsPerConnection: 10
+    circuitBreaker:
+      consecutiveErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    loadBalancer:
+      simple: LEAST_CONN
