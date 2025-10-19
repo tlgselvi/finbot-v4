@@ -9,7 +9,7 @@ import { connectRedis, checkRedisHealth } from './lib/redis';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 8001;
 
 // Middleware
 app.use(helmet());

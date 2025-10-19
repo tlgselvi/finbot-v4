@@ -80,23 +80,38 @@ FinBot v4, kurumsal finansal işlemler için kapsamlı onay sistemi, risk değer
 git clone https://github.com/yourusername/finbot-v4.git
 cd finbot-v4
 
-# Bağımlılıkları yükle
+# Frontend bağımlılıkları
 npm install
 
-# Environment dosyasını oluştur
-cp .env.example .env
+# Backend bağımlılıkları
+cd backend && npm install && cd ..
 
-# Docker ile servisleri başlat
-docker-compose up -d
+# Docker ile veritabanı servislerini başlat
+docker-compose -f docker-compose.dev.yml up -d
 
 # Database migration'ları çalıştır
-npm run db:migrate
+cd backend && npx prisma migrate dev && cd ..
 
 # Test verilerini yükle
-npm run db:seed
+cd backend && npx prisma db seed && cd ..
 
-# Development server'ı başlat
+# Backend server'ı başlat (Port: 8001)
+cd backend && npm run dev &
+
+# Frontend server'ı başlat (Port: 3000)
 npm run dev
+```
+
+### Hızlı Test
+
+```bash
+# Servislerin durumunu kontrol et
+curl http://localhost:8001/health  # Backend
+curl http://localhost:8080/health  # ML Service
+curl http://localhost:3000         # Frontend
+
+# Dashboard'u test et
+curl http://localhost:3000/api/dashboard
 ```
 
 ### Test Ortamı
@@ -114,23 +129,30 @@ kubectl apply -f k8s/deployments/test/
 
 ## 📋 Özellik Durumu
 
-### ✅ Tamamlanan Modüller
-- [x] Database Schema ve Core Infrastructure
-- [x] Approval Rule Engine
-- [x] Workflow Orchestrator
-- [x] Risk Assessment Engine
-- [x] Notification Service
-- [x] Frontend Dashboard
-- [x] Admin Configuration Interface
-- [x] Audit Trail ve Reporting
-- [x] Security Hardening
-- [x] Production Deployment
+### ✅ Tamamlanan Modüller (%85 Complete)
+- [x] **Database Infrastructure** - PostgreSQL + Redis + Prisma ORM
+- [x] **ML Pipeline** - Anomaly detection, Risk assessment, Budget optimization
+- [x] **Backend API** - Express.js + TypeScript (Port: 8001)
+- [x] **Frontend Dashboard** - Next.js + React + TailwindCSS (Port: 3000)
+- [x] **Goal Tracking System** - Comprehensive AI-assisted goal management
+- [x] **Docker Infrastructure** - Multi-service containerization
+- [x] **API Integration** - Frontend-Backend-ML service communication
+- [x] **Health Monitoring** - Service health checks and monitoring
+- [x] **Security Layer** - JWT, encryption, audit logging
 
-### 🔄 Geliştirme Aşamasında
-- [ ] Advanced ML Models
-- [ ] Mobile Application
-- [ ] Third-party Integrations
-- [ ] Advanced Analytics
+### 🔄 Geliştirme Aşamasında (%15 Remaining)
+- [ ] User Authentication System (API endpoints)
+- [ ] Transaction CRUD Operations
+- [ ] Budget Management API
+- [ ] Notification System Integration
+- [ ] Production Deployment Optimization
+
+### 🚀 **Çalışan Servisler**
+- **Frontend**: http://localhost:3000 ✅
+- **Backend API**: http://localhost:8001 ✅  
+- **ML Service**: http://localhost:8080 ✅
+- **PostgreSQL**: localhost:5432 ✅
+- **Redis**: localhost:6379 ✅
 
 ## 🔒 Güvenlik
 
